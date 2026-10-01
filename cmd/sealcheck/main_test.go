@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rakamac/sealcheck/internal/seal"
+	"github.com/rhegde8/sealcheck/internal/seal"
 )
 
 // A real subprocess validates the JSON launcher interface and secret scrubbing.

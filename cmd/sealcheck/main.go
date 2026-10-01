@@ -12,7 +12,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/rakamac/sealcheck/internal/seal"
+	"github.com/rhegde8/sealcheck/internal/seal"
 )
 
 func main() {

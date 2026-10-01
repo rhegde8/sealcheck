@@ -1,3 +1,3 @@
-module github.com/rakamac/sealcheck
+module github.com/rhegde8/sealcheck
 
 go 1.24.0
