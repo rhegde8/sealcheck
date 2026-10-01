@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -88,7 +89,34 @@ func runProbe(ctx context.Context, plan Plan, q Probe) (string, int, error) {
 	case "dns", "dns-system":
 		name := "sc1." + plan.RunID + "." + q.ID + "." + plan.Tokens[q.ID] + "." + strings.TrimSuffix(q.Zone, ".") + "."
 		if q.Kind == "dns-system" {
-			_, e := net.DefaultResolver.LookupHost(ctx, name)
+			// Go normally strips syscall errors when creating DNSError. Track
+			// dial failures without classifying text like "permission denied".
+			var mu sync.Mutex
+			attempts, denials := 0, 0
+			originalDial := net.DefaultResolver.Dial
+			resolver := &net.Resolver{PreferGo: true, StrictErrors: true, Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
+				var c net.Conn
+				var err error
+				if originalDial != nil {
+					c, err = originalDial(ctx, network, address)
+				} else {
+					c, err = (&net.Dialer{}).DialContext(ctx, network, address)
+				}
+				mu.Lock()
+				attempts++
+				if errors.Is(err, syscall.EACCES) || errors.Is(err, syscall.EPERM) {
+					denials++
+				}
+				mu.Unlock()
+				return c, err
+			}}
+			_, e := resolver.LookupHost(ctx, name)
+			mu.Lock()
+			allDenied := attempts > 0 && attempts == denials
+			mu.Unlock()
+			if e != nil && allDenied {
+				return "denied", 0, syscall.EACCES
+			}
 			return "sent", 0, e
 		}
 		packet, e := dnsQuestion(name)

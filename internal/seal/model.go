@@ -170,7 +170,15 @@ func ReadJSON(path string, dst any) error {
 }
 
 func DecodeJSON(r io.Reader, dst any) error {
-	d := json.NewDecoder(io.LimitReader(r, 8<<20))
+	const limit = 8 << 20
+	data, err := io.ReadAll(io.LimitReader(r, limit+1))
+	if err != nil {
+		return err
+	}
+	if len(data) > limit {
+		return errors.New("JSON input exceeds 8 MiB")
+	}
+	d := json.NewDecoder(bytes.NewReader(data))
 	d.DisallowUnknownFields()
 	if err := d.Decode(dst); err != nil {
 		return err
@@ -197,7 +205,7 @@ func WriteAtomic(path string, b []byte, mode os.FileMode) error {
 
 func httpURL(s string) bool {
 	u, e := url.Parse(s)
-	return e == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Hostname() != "" && u.User == nil && u.Fragment == ""
+	return len(s) <= 2048 && e == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Hostname() != "" && u.User == nil && u.Fragment == ""
 }
 
 func (p Policy) Validate() error {

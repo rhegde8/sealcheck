@@ -95,15 +95,15 @@ func Check(ctx context.Context, p Policy, key ed25519.PrivateKey, out string, la
 	// Complete evidence collection after probe failures. Observed leaks take precedence.
 	timer := time.NewTimer(time.Duration(p.ObservationMS) * time.Millisecond)
 	select {
-	case <-ctx.Done():
+	case <-runCtx.Done():
 		timer.Stop()
 	case <-timer.C:
 	}
 	for i, cfg := range p.Witnesses {
 		if cfg.RegistryURL != "" {
-			witnesses[i].Readbacks = readRegistry(ctx, cfg.RegistryURL, plan)
+			witnesses[i].Readbacks = readRegistry(runCtx, cfg.RegistryURL, plan)
 		}
-		s, err := fetchSnapshot(ctx, cfg, "/events", plan.RunID)
+		s, err := fetchSnapshot(runCtx, cfg, "/events", plan.RunID)
 		w := &witnesses[i]
 		w.After = time.Now().UTC()
 		w.HealthyAfter = err == nil && s.Instance == w.Snapshot.Instance
@@ -170,6 +170,12 @@ func SaveReport(dir string, report Report, key ed25519.PrivateKey) error {
 	}
 	bundle, err := Sign(report, key)
 	if err != nil {
+		return err
+	}
+	if err = WriteJSON(filepath.Join(dir, "results.json"), report.Results); err != nil {
+		return err
+	}
+	if err = WriteJSON(filepath.Join(dir, "witnesses.json"), report.Witnesses); err != nil {
 		return err
 	}
 	if err = WriteJSON(filepath.Join(dir, "report.json"), report); err != nil {

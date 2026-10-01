@@ -21,6 +21,9 @@ func Evaluate(plan Plan, results Results, witnesses []Witness, now time.Time) Re
 	if plan.CreatedAt.After(now.Add(2*time.Second)) || now.After(plan.Deadline) {
 		addError("evaluation outside the plan validity window")
 	}
+	if now.Sub(plan.CreatedAt) > time.Duration(plan.Policy.MaxAgeSeconds)*time.Second {
+		addError("run exceeded the policy maximum age before evaluation")
+	}
 	if results.Version != Version || results.RunID != plan.RunID || results.PolicySHA256 != plan.PolicySHA256 {
 		addError("runner result binding mismatch")
 	}

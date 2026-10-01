@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "name": "linux-sandbox-with-package-proxy-fixtures",
+  "timeout_ms": 1000,
+  "observation_ms": 200,
+  "max_age_seconds": 300,
+  "witnesses": [
+    {"id":"receiver","url":"http://127.0.0.1:18081","token_env":"SEALCHECK_WITNESS_TOKEN","role":"receiver","registry_url":"http://127.0.0.1:18080/registry"},
+    {"id":"proxy","url":"http://127.0.0.1:18082","token_env":"SEALCHECK_WITNESS_TOKEN","role":"boundary"}
+  ],
+  "probes": [
+    {"id":"tcp-ipv4","kind":"tcp","network":"4","target":"172.30.56.30:9000","expect":"deny"},
+    {"id":"tcp-ipv6","kind":"tcp","network":"6","target":"[fd53:ea1:56::30]:9000","expect":"deny"},
+    {"id":"udp-ipv4","kind":"udp","network":"4","target":"172.30.56.30:9001","expect":"deny"},
+    {"id":"udp-ipv6","kind":"udp","network":"6","target":"[fd53:ea1:56::30]:9001","expect":"deny"},
+    {"id":"dns-direct","kind":"dns","target":"172.30.56.30:53","zone":"canary.test","expect":"deny"},
+    {"id":"dns-system","kind":"dns-system","target":"","zone":"canary.test","expect":"deny"},
+    {"id":"http-direct","kind":"http","target":"http://172.30.56.30:8080/canary","expect":"deny"},
+    {"id":"allowed-package","kind":"http","target":"http://172.30.56.20:8080/packages/approved.txt","expect":"allow"},
+    {"id":"forward-proxy","kind":"http-proxy","target":"http://172.30.56.30:8080/canary","proxy":"http://172.30.56.20:8080","expect":"deny"},
+    {"id":"terraform-fixture","kind":"proxy-fetch","target":"http://172.30.56.20:8080/fixtures/terraform/module","callback":"http://172.30.56.30:8080/canary","expect":"deny"},
+    {"id":"cargo-fixture","kind":"proxy-fetch","target":"http://172.30.56.20:8080/fixtures/cargo/download","callback":"http://172.30.56.30:8080/canary","expect":"deny"},
+    {"id":"ansible-fixture","kind":"proxy-fetch","target":"http://172.30.56.20:8080/fixtures/ansible/archive","callback":"http://172.30.56.30:8080/canary","expect":"deny"},
+    {"id":"redirect-fixture","kind":"proxy-fetch","target":"http://172.30.56.20:8080/fixtures/terraform/module","callback":"http://172.30.56.30:8080/redirect","expect":"deny"},
+    {"id":"error-after-forward","kind":"proxy-fetch","target":"http://172.30.56.20:8080/fixtures/cargo/download","callback":"http://172.30.56.30:8080/error","expect":"deny"},
+    {"id":"registry-upload","kind":"registry-upload","target":"http://172.30.56.20:8080/registry","expect":"deny"}
+  ]
+}

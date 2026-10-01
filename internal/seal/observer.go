@@ -48,6 +48,10 @@ func (o *Observer) Snapshot(run string) Snapshot {
 	s := Snapshot{Instance: o.instance, At: time.Now().UTC(), Overflow: o.overflow, Events: []Event{}}
 	for _, e := range o.events {
 		if e.RunID == run {
+			if len(s.Events) >= 1024 {
+				s.Overflow = true
+				break
+			}
 			s.Events = append(s.Events, e)
 		}
 	}
@@ -149,6 +153,7 @@ func (o *Observer) registryHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (o *Observer) ServeTCP(ctx context.Context, l net.Listener) error {
+	connections := make(chan struct{}, 64)
 	go func() { <-ctx.Done(); _ = l.Close() }()
 	for {
 		c, e := l.Accept()
@@ -158,7 +163,14 @@ func (o *Observer) ServeTCP(ctx context.Context, l net.Listener) error {
 			}
 			return e
 		}
+		select {
+		case connections <- struct{}{}:
+		default:
+			_ = c.Close()
+			continue
+		}
 		go func() {
+			defer func() { <-connections }()
 			defer c.Close()
 			_ = c.SetDeadline(time.Now().Add(2 * time.Second))
 			b, _ := bufio.NewReader(io.LimitReader(c, 256)).ReadBytes('\n')

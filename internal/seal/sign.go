@@ -112,6 +112,9 @@ func Sign(report Report, key ed25519.PrivateKey) (Bundle, error) {
 	if e != nil {
 		return Bundle{}, e
 	}
+	if len(b) > 4<<20 {
+		return Bundle{}, errors.New("report exceeds 4 MiB evidence limit")
+	}
 	sig := ed25519.Sign(key, signingBytes(b))
 	pub := key.Public().(ed25519.PublicKey)
 	return Bundle{Version: Version, KeyID: Hash(pub), Payload: base64.StdEncoding.EncodeToString(b), Signature: base64.StdEncoding.EncodeToString(sig)}, nil

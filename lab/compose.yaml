@@ -1,0 +1,66 @@
+name: sealcheck-lab
+
+services:
+  receiver:
+    build: ..
+    image: sealcheck-lab:local
+    command: [receiver, --http, '[::]:8080', --management, '[::]:8081', --tcp, '[::]:9000', --udp, '[::]:9001', --dns, '0.0.0.0:53']
+    environment:
+      SEALCHECK_WITNESS_TOKEN: ${SEALCHECK_WITNESS_TOKEN:?Set a random witness token}
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    sysctls:
+      net.ipv4.ip_unprivileged_port_start: '0'
+    ports: ['127.0.0.1:18080:8080', '127.0.0.1:18081:8081']
+    networks:
+      data:
+        ipv4_address: 172.30.56.30
+        ipv6_address: fd53:ea1:56::30
+      management:
+        ipv4_address: 172.30.57.30
+    read_only: true
+
+  proxy:
+    image: sealcheck-lab:local
+    command: [fixture, --http, '172.30.56.20:8080', --management, '[::]:8081', --upstream, 'http://172.30.56.30:8080']
+    environment:
+      SEALCHECK_WITNESS_TOKEN: ${SEALCHECK_WITNESS_TOKEN:?Set a random witness token}
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    ports: ['127.0.0.1:18082:8081']
+    networks:
+      data:
+        ipv4_address: 172.30.56.20
+        ipv6_address: fd53:ea1:56::20
+      management:
+        ipv4_address: 172.30.57.20
+    depends_on: [receiver]
+    read_only: true
+
+  sandbox:
+    image: sealcheck-lab:local
+    user: '0:0'
+    entrypoint: [/usr/local/bin/sealcheck-lab-entrypoint]
+    cap_drop: [ALL]
+    cap_add: [NET_ADMIN, SETUID, SETGID, SETPCAP]
+    security_opt: [no-new-privileges:true]
+    networks:
+      data:
+        ipv4_address: 172.30.56.10
+        ipv6_address: fd53:ea1:56::10
+    depends_on: [proxy]
+    read_only: true
+
+networks:
+  data:
+    internal: true
+    enable_ipv6: true
+    ipam:
+      config:
+        - subnet: 172.30.56.0/24
+        - subnet: fd53:ea1:56::/64
+  management:
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.30.57.0/24

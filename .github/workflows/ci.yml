@@ -1,0 +1,27 @@
+name: verify
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - run: go vet ./...
+      - run: go test -race ./...
+      - run: go build -trimpath -o bin/sealcheck ./cmd/sealcheck
+      - run: ./bin/sealcheck demo --out out/demo
+      - run: ./lab/run.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sealcheck-evidence
+          path: |
+            out/**/report.json
+            out/**/bundle.json
+            out/**/summary.txt
+            out/**/*.pub.pem
