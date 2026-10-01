@@ -15,6 +15,8 @@ import (
 	"time"
 )
 
+const datagramCopies = 3
+
 func CurrentIdentity() Identity {
 	host, _ := os.Hostname()
 	i := Identity{UID: os.Getuid(), EUID: os.Geteuid(), GID: os.Getgid(), Hostname: host, Source: "runner-reported", Namespaces: map[string]string{}, ProcessStatus: map[string]string{}}
@@ -85,6 +87,10 @@ func runProbe(ctx context.Context, plan Plan, q Probe) (string, int, error) {
 		if q.Kind == "tcp" {
 			return "success", 0, nil
 		}
+		// Repeat datagrams so one lost packet cannot hide a delivery path.
+		for i := 1; i < datagramCopies && e == nil; i++ {
+			_, e = io.WriteString(c, canary+"\n")
+		}
 		return "sent", 0, e // UDP send success alone does not establish delivery.
 	case "dns", "dns-system":
 		name := "sc1." + plan.RunID + "." + q.ID + "." + plan.Tokens[q.ID] + "." + strings.TrimSuffix(q.Zone, ".") + "."
@@ -131,7 +137,9 @@ func runProbe(ctx context.Context, plan Plan, q Probe) (string, int, error) {
 		if deadline, ok := ctx.Deadline(); ok {
 			_ = c.SetDeadline(deadline)
 		}
-		_, e = c.Write(packet)
+		for i := 0; i < datagramCopies && e == nil; i++ {
+			_, e = c.Write(packet)
+		}
 		if e != nil {
 			return "error", 0, e
 		}

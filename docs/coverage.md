@@ -3,9 +3,10 @@
 | Channel or failure | Implemented measurement | Validation |
 |---|---|---|
 | TCP IPv4/IPv6 | Connection plus synthetic canary write | Portable TCP control; IPv6 regression; Linux leak/remediation profile |
-| UDP IPv4/IPv6 | Synthetic datagram plus independent receipt | UDP integration; no-ack regression; Linux profile |
-| Direct DNS | Synthetic labels at controlled authoritative server | NXDOMAIN receiver and correlated receipt |
-| System-configured DNS | Go resolver using sandbox resolver configuration | NXDOMAIN integration and Linux profile |
+| UDP IPv4/IPv6 | Three synthetic datagrams plus independent receipt | UDP integration; no-ack regression; Linux profile |
+| Direct DNS | Synthetic labels at controlled authoritative server | Authoritative NODATA receiver and correlated receipt |
+| System-configured DNS | Go resolver using sandbox resolver configuration | Negative-answer integration and Linux profile |
+| DNS via minimizing recursive resolver | Receiver answers in-zone names with authoritative NODATA, so RFC 9156 resolvers continue to the full canary name instead of stopping at an NXDOMAIN cut | Label-by-label recursive stub regression |
 | DNS tunneling primitive | Synthetic information carried in query labels | Demonstrates query-label delivery, not arbitrary tunneling throughput |
 | Direct HTTP(S) | Explicit direct transport | Proxy-environment regression; Linux direct HTTP profile; normal TLS verification |
 | HTTP forward proxy | Explicit transport through selected proxy | Portable allow/deny fixture |

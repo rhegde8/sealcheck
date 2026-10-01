@@ -200,14 +200,9 @@ func (o *Observer) ServeUDP(ctx context.Context, c net.PacketConn, dns bool) err
 			if e, ok := dnsCanary(name, o.zone); ok {
 				o.Record(e, "received", "dns", addr.String())
 			}
-			// NXDOMAIN is intentional: a failed lookup can still leak its query labels.
-			response := append([]byte(nil), b[:end]...)
-			response[2] = 0x84
-			response[3] = 3
-			for i := 6; i < 12; i++ {
-				response[i] = 0
-			}
-			_, _ = c.WriteTo(response, addr)
+			// The lookup still fails for the probe: a negative answer does not
+			// mean its query labels stayed inside the boundary.
+			_, _ = c.WriteTo(dnsResponse(b[:end], name, o.zone), addr)
 		} else if e, ok := ParseCanary(b[:n]); ok {
 			o.Record(e, "received", "udp", addr.String())
 		}
