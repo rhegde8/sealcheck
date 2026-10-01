@@ -150,6 +150,7 @@ The Terraform, Cargo, and Ansible routes in this repository are **synthetic fixt
 - [Policy, commands, and report contract](docs/interfaces.md)
 - [Coverage and validation matrix](docs/coverage.md)
 - [Research and expansion criteria](docs/research.md)
+- [Handoff: status and 1.0 TODOs](docs/handoff.md)
 
 ## Development
 
