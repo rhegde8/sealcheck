@@ -5,7 +5,7 @@ import (
 	"time"
 )
 
-const ToolVersion = "0.1.0"
+const ToolVersion = "0.2.0"
 
 func Evaluate(plan Plan, results Results, witnesses []Witness, now time.Time) Report {
 	report := Report{Version: Version, ToolVersion: ToolVersion, IssuedAt: now.UTC(), Plan: plan, Results: results, Witnesses: witnesses, Findings: []Finding{}, Verdict: "PASS", Limitations: []string{
@@ -78,7 +78,7 @@ func Evaluate(plan Plan, results Results, witnesses []Witness, now time.Time) Re
 				if e.RunID != plan.RunID || e.ProbeID != q.ID || e.Token != plan.Tokens[q.ID] || e.PayloadSHA256 != Hash([]byte(Canary(plan, q.ID))) || e.At.Before(plan.CreatedAt.Add(-2*time.Second)) || e.At.After(now.Add(2*time.Second)) {
 					continue
 				}
-				if !eventProtocolMatches(q.Kind, e.Protocol) {
+				if !eventProtocolMatches(q, e.Protocol) {
 					continue
 				}
 				if e.Action == "received" {
@@ -149,10 +149,14 @@ func Evaluate(plan Plan, results Results, witnesses []Witness, now time.Time) Re
 	return report
 }
 
-func eventProtocolMatches(kind, protocol string) bool {
-	switch kind {
+// A hostname-borne canary leaks through resolution, so DNS receipts count.
+func eventProtocolMatches(q Probe, protocol string) bool {
+	if protocol == "dns" && usesCanaryHost(q) {
+		return true
+	}
+	switch q.Kind {
 	case "tcp", "udp":
-		return kind == protocol
+		return q.Kind == protocol
 	case "dns", "dns-system":
 		return protocol == "dns"
 	case "registry-upload":

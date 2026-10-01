@@ -23,6 +23,8 @@
     {"id":"ansible-fixture","kind":"proxy-fetch","target":"http://172.30.56.20:8080/fixtures/ansible/archive","callback":"http://172.30.56.30:8080/canary","expect":"deny"},
     {"id":"redirect-fixture","kind":"proxy-fetch","target":"http://172.30.56.20:8080/fixtures/terraform/module","callback":"http://172.30.56.30:8080/redirect","expect":"deny"},
     {"id":"error-after-forward","kind":"proxy-fetch","target":"http://172.30.56.20:8080/fixtures/cargo/download","callback":"http://172.30.56.30:8080/error","expect":"deny"},
-    {"id":"registry-upload","kind":"registry-upload","target":"http://172.30.56.20:8080/registry","expect":"deny"}
+    {"id":"registry-upload","kind":"registry-upload","target":"http://172.30.56.20:8080/registry","expect":"deny"},
+    {"id":"proxy-dns-forward","kind":"http-proxy","target":"http://{canary_host}/canary","proxy":"http://172.30.56.20:8080","zone":"canary.test","expect":"deny"},
+    {"id":"proxy-dns-callback","kind":"proxy-fetch","target":"http://172.30.56.20:8080/fixtures/terraform/module","callback":"http://{canary_host}/canary","zone":"canary.test","expect":"deny"}
   ]
 }

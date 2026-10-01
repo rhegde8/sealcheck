@@ -352,6 +352,8 @@ func serveCommand(ctx context.Context, name string, args []string) (int, error) 
 	zone := f.String("zone", "canary.test", "controlled DNS zone")
 	upstream := f.String("upstream", "", "fixture's required controlled receiver origin")
 	leaky := f.Bool("leaky", false, "enable deliberately leaky fixture behavior")
+	resolver := f.String("resolver", "", "fixture's DNS server for names it resolves when leaky")
+	authEnv := f.String("auth-token-env", "", "environment variable holding a bearer token fixture routes require")
 	if e := parse(f, args); e != nil {
 		return flagResult(e)
 	}
@@ -362,6 +364,14 @@ func serveCommand(ctx context.Context, name string, args []string) (int, error) 
 	} else {
 		var fixture *seal.Fixture
 		fixture, e = seal.NewFixture(*upstream, *leaky)
+		if e == nil && *resolver != "" {
+			fixture.Resolver = seal.UDPResolver(*resolver)
+		}
+		if e == nil && *authEnv != "" {
+			if fixture.AuthToken = os.Getenv(*authEnv); fixture.AuthToken == "" {
+				e = errors.New("fixture auth token variable is empty")
+			}
+		}
 		if e == nil {
 			s, e = seal.StartFixture(ctx, fixture, *listen, *management, os.Getenv(*tokenEnv))
 		}

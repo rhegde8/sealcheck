@@ -43,7 +43,7 @@ func TestPortableDemo(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	found := false
+	found, proxyDNS := false, 0
 	for _, f := range reports[1].Findings {
 		if f.ID == "registry-upload" {
 			found = strings.Contains(f.Reason, "external reader")
@@ -51,6 +51,22 @@ func TestPortableDemo(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("registry upload was not independently retrieved")
+	}
+	for _, f := range reports[1].Findings {
+		if strings.HasPrefix(f.ID, "proxy-dns-") && (f.Verdict != "FAIL" || !strings.Contains(strings.Join(f.Evidence, ","), "witnesses/receiver/events/")) {
+			t.Fatalf("proxy-side resolution of a canary hostname was not detected: %+v", f)
+		}
+		if strings.HasPrefix(f.ID, "proxy-dns-") {
+			proxyDNS++
+		}
+	}
+	for _, f := range reports[0].Findings {
+		if strings.HasPrefix(f.ID, "proxy-dns-") && f.Verdict != "PASS" {
+			t.Fatalf("non-leaky proxy should deny without resolving: %+v", f)
+		}
+	}
+	if proxyDNS != 2 {
+		t.Fatal("missing proxy DNS probes")
 	}
 	for _, r := range reports[1].Results.Probes {
 		if r.ID == "error-after-forward" && r.HTTPStatus != 500 {

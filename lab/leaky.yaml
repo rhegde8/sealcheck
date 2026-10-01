@@ -1,3 +1,3 @@
 services:
   proxy:
-    command: [fixture, --http, '172.30.56.20:8080', --management, '[::]:8081', --upstream, 'http://172.30.56.30:8080', --leaky]
+    command: [fixture, --http, '172.30.56.20:8080', --management, '[::]:8081', --upstream, 'http://172.30.56.30:8080', --resolver, '172.30.56.30:53', --leaky]

@@ -30,6 +30,13 @@ type Probe struct {
 	Callback      string `json:"callback,omitempty"`
 	Zone          string `json:"zone,omitempty"`
 	IdentityLabel string `json:"identity_label,omitempty"`
+	// Method applies to templated proxy-fetch targets.
+	Method  string            `json:"method,omitempty"`
+	Headers map[string]string `json:"headers,omitempty"`
+	// CredentialEnv names a variable the runner reads inside the sandbox, so
+	// the probe carries the workload's own identity. Values are never recorded.
+	CredentialEnv    string `json:"credential_env,omitempty"`
+	CredentialHeader string `json:"credential_header,omitempty"`
 }
 
 // Witness management endpoints are read by the controller, never by a probe.
@@ -218,6 +225,10 @@ func (p Policy) Validate() error {
 	if len(p.Probes) == 0 || len(p.Probes) > 128 {
 		return errors.New("policy requires 1–128 probes")
 	}
+	tokenEnvs := map[string]bool{}
+	for _, w := range p.Witnesses {
+		tokenEnvs[w.TokenEnv] = true
+	}
 	seen := map[string]bool{}
 	requiredCount := 0
 	for _, q := range p.Probes {
@@ -234,6 +245,10 @@ func (p Policy) Validate() error {
 		if q.Network != "" && q.Network != "4" && q.Network != "6" {
 			return fmt.Errorf("%s: network must be 4 or 6", q.ID)
 		}
+		httpKind := q.Kind == "http" || q.Kind == "http-proxy" || q.Kind == "proxy-fetch" || q.Kind == "registry-upload"
+		if !httpKind && (q.Method != "" || len(q.Headers) > 0 || q.CredentialEnv != "" || q.CredentialHeader != "") {
+			return fmt.Errorf("%s: method, headers, and credentials require an HTTP probe", q.ID)
+		}
 		switch q.Kind {
 		case "tcp", "udp", "dns":
 			host, _, e := net.SplitHostPort(q.Target)
@@ -245,14 +260,17 @@ func (p Policy) Validate() error {
 				return fmt.Errorf("%s: system resolver probe uses zone, not target", q.ID)
 			}
 		case "http", "http-proxy", "proxy-fetch", "registry-upload":
-			if !httpURL(q.Target) {
+			if q.Target == "" {
 				return fmt.Errorf("%s: target must be an HTTP(S) URL without credentials", q.ID)
 			}
 			if q.Kind == "http-proxy" && !httpURL(q.Proxy) {
 				return fmt.Errorf("%s: proxy URL required", q.ID)
 			}
-			if q.Kind == "proxy-fetch" && !httpURL(q.Callback) {
+			if q.Kind == "proxy-fetch" && q.Callback == "" {
 				return fmt.Errorf("%s: callback URL required", q.ID)
+			}
+			if e := validateHTTPTemplates(q, tokenEnvs); e != nil {
+				return fmt.Errorf("%s: %w", q.ID, e)
 			}
 		default:
 			return fmt.Errorf("%s: unsupported probe kind %q", q.ID, q.Kind)

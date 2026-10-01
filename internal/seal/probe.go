@@ -63,6 +63,10 @@ func RunProbes(ctx context.Context, plan Plan) (Results, error) {
 			if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, os.ErrDeadlineExceeded) {
 				result.Detail = "deadline exceeded; a timeout is not evidence of denial"
 			}
+			if errors.Is(err, errCredentialUnavailable) {
+				result.Outcome = "unsupported"
+				result.Detail = "credential environment variable unset"
+			}
 		}
 		r.Probes = append(r.Probes, result)
 	}
@@ -147,54 +151,85 @@ func runProbe(ctx context.Context, plan Plan, q Probe) (string, int, error) {
 		_, e = c.Read(buf)
 		return "sent", 0, e // A DNS answer is not proof that the authoritative receiver saw the query.
 	case "http", "http-proxy", "proxy-fetch", "registry-upload":
-		target, e := url.Parse(q.Target)
-		if e != nil {
-			return "error", 0, e
-		}
-		method := http.MethodGet
-		var body io.Reader
-		if q.Kind == "proxy-fetch" {
-			callback, _ := url.Parse(q.Callback)
-			params := callback.Query()
-			params.Set("canary", canary)
-			callback.RawQuery = params.Encode()
-			params = target.Query()
-			params.Set("url", callback.String())
-			params.Set("canary", canary)
-			target.RawQuery = params.Encode()
-		} else if q.Kind == "registry-upload" {
-			method = http.MethodPut
-			body = strings.NewReader(canary)
-			target.Path = strings.TrimSuffix(target.Path, "/") + "/" + plan.RunID + "/" + q.ID
-		} else {
-			params := target.Query()
-			params.Set("canary", canary)
-			target.RawQuery = params.Encode()
-		}
-		transport := &http.Transport{Proxy: nil, DialContext: (&net.Dialer{}).DialContext, DisableKeepAlives: true}
-		defer transport.CloseIdleConnections()
-		if q.Kind == "http-proxy" {
-			proxy, _ := url.Parse(q.Proxy)
-			transport.Proxy = http.ProxyURL(proxy)
-		}
-		client := &http.Client{Transport: transport, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}
-		req, e := http.NewRequestWithContext(ctx, method, target.String(), body)
-		if e != nil {
-			return "error", 0, e
-		}
-		req.Header.Set("User-Agent", "sealcheck/0.1")
-		res, e := client.Do(req)
-		if e != nil {
-			return "error", 0, e
-		}
-		defer res.Body.Close()
-		_, _ = io.Copy(io.Discard, io.LimitReader(res.Body, 4096))
-		if res.StatusCode >= 200 && res.StatusCode < 300 {
-			return "success", res.StatusCode, nil
-		}
-		// A 403/500 can occur after forwarding; only independent evidence establishes denial.
-		return "error", res.StatusCode, nil
+		return httpProbe(ctx, plan, q, canary)
 	default:
 		return "unsupported", 0, fmt.Errorf("unsupported kind")
 	}
+}
+
+func httpProbe(ctx context.Context, plan Plan, q Probe, canary string) (string, int, error) {
+	rawTarget, callback, e := probeURLs(q, plan.RunID, plan.Tokens[q.ID])
+	if e != nil {
+		return "error", 0, e
+	}
+	target, e := url.Parse(rawTarget)
+	if e != nil {
+		return "error", 0, e
+	}
+	method := http.MethodGet
+	var body io.Reader
+	switch {
+	case fetchTemplate(q):
+		// The policy placed {callback} where the handler reads its upstream.
+		if q.Method != "" {
+			method = q.Method
+		}
+	case q.Kind == "proxy-fetch":
+		params := target.Query()
+		params.Set("url", callback)
+		params.Set("canary", canary)
+		target.RawQuery = params.Encode()
+	case q.Kind == "registry-upload":
+		method = http.MethodPut
+		body = strings.NewReader(canary)
+		target.Path = strings.TrimSuffix(target.Path, "/") + "/" + plan.RunID + "/" + q.ID
+	default:
+		params := target.Query()
+		params.Set("canary", canary)
+		target.RawQuery = params.Encode()
+	}
+	transport := &http.Transport{Proxy: nil, DialContext: (&net.Dialer{}).DialContext, DisableKeepAlives: true}
+	defer transport.CloseIdleConnections()
+	if q.Kind == "http-proxy" {
+		proxy, _ := url.Parse(q.Proxy)
+		transport.Proxy = http.ProxyURL(proxy)
+	}
+	client := &http.Client{Transport: transport, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}
+	req, e := http.NewRequestWithContext(ctx, method, target.String(), body)
+	if e != nil {
+		return "error", 0, e
+	}
+	req.Header.Set("User-Agent", "sealcheck/0.1")
+	headers, e := headerValues(q, canary, callback)
+	if e != nil {
+		return "error", 0, e
+	}
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	if q.CredentialEnv != "" {
+		value := os.Getenv(q.CredentialEnv)
+		if value == "" {
+			return "unsupported", 0, errCredentialUnavailable
+		}
+		name := credentialHeader(q)
+		if q.Kind == "http-proxy" && strings.EqualFold(name, "Proxy-Authorization") && target.Scheme == "https" {
+			// Only the CONNECT request may carry proxy credentials; request
+			// headers travel inside the tunnel to the origin.
+			transport.ProxyConnectHeader = http.Header{name: {value}}
+		} else {
+			req.Header.Set(name, value)
+		}
+	}
+	res, e := client.Do(req)
+	if e != nil {
+		return "error", 0, e
+	}
+	defer res.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(res.Body, 4096))
+	if res.StatusCode >= 200 && res.StatusCode < 300 {
+		return "success", res.StatusCode, nil
+	}
+	// A 403/500 can occur after forwarding; only independent evidence establishes denial.
+	return "error", res.StatusCode, nil
 }

@@ -22,7 +22,7 @@ services:
 
   proxy:
     image: sealcheck-lab:local
-    command: [fixture, --http, '172.30.56.20:8080', --management, '[::]:8081', --upstream, 'http://172.30.56.30:8080']
+    command: [fixture, --http, '172.30.56.20:8080', --management, '[::]:8081', --upstream, 'http://172.30.56.30:8080', --resolver, '172.30.56.30:53']
     environment:
       SEALCHECK_WITNESS_TOKEN: ${SEALCHECK_WITNESS_TOKEN:?Set a random witness token}
     cap_drop: [ALL]

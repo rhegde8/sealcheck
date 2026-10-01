@@ -26,6 +26,28 @@ Probe IDs use lowercase letters, digits, and hyphens, with a maximum of 32 chara
 | `proxy-fetch` | Synthetic fixture `target` plus controlled `callback`; the fixture receives a `url` parameter. This is not a generic Artifactory adapter. |
 | `registry-upload` | Controlled fixture `target`, typically `/registry`; PUT the synthetic body under the run/probe path. |
 
+### HTTP probe templates and credentials
+
+HTTP probes accept optional fields. Each is omitted from the policy hash when unset, so existing policies keep their hashes.
+
+| Field | Contract |
+|---|---|
+| `zone` | Required when a URL uses `{canary_host}`. |
+| `headers` | Up to 16 extra request headers. Names match `[A-Za-z0-9-]{1,64}`. Framing and connection headers, `Authorization`, `Cookie`, and `Proxy-*` are rejected; credentials belong in `credential_env`. Values are at most 1,024 bytes. |
+| `method` | `GET`, `HEAD`, `POST`, or `PUT`; only for a templated `proxy-fetch`. |
+| `credential_env` | Names a variable the runner reads **inside the sandbox**, so the probe uses the workload's own identity. If it is unset, the result is `unsupported` (INCONCLUSIVE, or SKIP when optional), never an anonymous attempt. The value never appears in results, errors, or reports. It cannot name a witness token variable. |
+| `credential_header` | Header that carries the credential. Defaults to `Authorization`, or `Proxy-Authorization` for `http-proxy`. For an HTTPS `http-proxy` target, `Proxy-Authorization` goes only on the CONNECT request. |
+
+| Placeholder | Expands to | Allowed in |
+|---|---|---|
+| `{canary_host}` | `sc1.<run>.<probe>.<token>.<zone>` | The entire host of an `http` or `http-proxy` target, or of a `proxy-fetch` callback |
+| `{callback}` | The query-escaped callback URL, including its `canary` parameter | `proxy-fetch` target or header values |
+| `{canary}` | The canary string | `proxy-fetch` target or header values |
+
+A `proxy-fetch` probe is *templated* when its target contains a placeholder or a header contains `{callback}`. A templated probe must place `{callback}` itself, and the runner adds no `url` or `canary` parameters. Templates let a policy describe the handler under test, such as a remote-repository endpoint and its injection point, without this repository shipping vendor request shapes. Unknown placeholders and stray braces are rejected.
+
+A `{canary_host}` probe also accepts DNS receipts for its canary. Resolving a denied name already delivers its labels to the zone's authoritative receiver, so a proxy that resolves before applying its policy FAILs even when it returns 403. Production use needs the zone delegated to the receiver.
+
 HTTP probes do not follow redirects themselves. The package-proxy fixture follows controlled upstream redirects to test that boundary. TLS uses normal platform certificate verification; there is no insecure-skip-verification option. Direct probes have explicit proxy isolation; inherited `HTTP_PROXY`, `HTTPS_PROXY`, and `ALL_PROXY` do not silently change their transport.
 
 Witness fields are `id`, `url`, `token_env`, and `role` (`receiver` or `boundary`). The URL is a management base URL. The credential value exists only in the controller environment variable named by `token_env`. `registry_url` optionally enables the controller's independent registry reader on a receiver witness. Management redirects are rejected to avoid forwarding credentials.

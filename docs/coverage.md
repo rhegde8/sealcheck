@@ -12,6 +12,9 @@
 | HTTP forward proxy | Explicit transport through selected proxy | Portable allow/deny fixture |
 | HTTPS CONNECT | Go transport support | Fixture rejects CONNECT; no dedicated CONNECT success fixture yet |
 | Package proxy SSRF behavior | Terraform/Cargo/Ansible-named synthetic handlers | Deny/forward pairs and redirect revalidation |
+| Proxy-side resolution of canary hostnames | `{canary_host}` targets and callbacks; DNS receipts count as delivery | Demo and lab leaky fixture resolves before denying (destination-IP ACL behavior) |
+| Authenticated proxy probes | `credential_env` read inside the sandbox; value never serialized | Credential present/missing/wrong regression and output scan |
+| Arbitrary handler injection points | Templated `proxy-fetch` with `{callback}` in path, query, or header | Path and header injection regression |
 | Forward then fail | Receiver logs a canary before returning 500 | Regression verifies FAIL despite local error |
 | Registry upload | Synthetic PUT and external GET of exact bytes | Demo confirms external readback; not a production registry protocol |
 | Missing receiver / overflow / restart | Health, instance continuity, and per-run overflow | Evaluator prevents PASS |

@@ -140,9 +140,9 @@ For manual integrations, `plan`, `probe`, and `evaluate` expose the stages separ
 
 ## Coverage and project status
 
-Implemented: TCP/UDP IPv4 and IPv6, direct and system-configured DNS canaries, direct HTTP(S), explicit HTTP forward proxy use, synthetic package-proxy fetch/redirect fixtures, private registry upload/readback, signed reports, offline verification, pre-flight gates, and periodic checks.
+Implemented: TCP/UDP IPv4 and IPv6, direct and system-configured DNS canaries (including through QNAME-minimizing resolvers), direct HTTP(S), explicit HTTP forward proxy use, proxy-side resolution of canary hostnames, templated proxy-fetch probes with the workload's own credentials, synthetic package-proxy fetch/redirect fixtures, private registry upload/readback, signed reports, offline verification, pre-flight gates, and periodic checks.
 
-The Terraform, Cargo, and Ansible routes in this repository are **synthetic fixture routes**. They are not Artifactory exploit paths, and passing them does not attest an Artifactory deployment. Real Artifactory adapters require version-specific reproductions. Timing/certificate oracles, DoH/DoT, QUIC, production registry protocols, and native libc/NSS resolver behavior are not claimed as covered.
+The Terraform, Cargo, and Ansible routes in this repository are **synthetic fixture routes**. To probe a real proxy, describe its handler with a [templated `proxy-fetch`](docs/interfaces.md#http-probe-templates-and-credentials) and supply the workload's credential through `credential_env`. They are not Artifactory exploit paths, and passing them does not attest an Artifactory deployment. Real Artifactory adapters require version-specific reproductions. Timing/certificate oracles, DoH/DoT, QUIC, production registry protocols, and native libc/NSS resolver behavior are not claimed as covered.
 
 - [Threat model and trust boundaries](docs/threat-model.md)
 - [Policy, commands, and report contract](docs/interfaces.md)
