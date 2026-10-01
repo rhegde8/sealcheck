@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -261,12 +262,14 @@ func minimizingResolver(t *testing.T, authority, zone string) string {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = c.Close() })
+	// Resolve now: the test replaces net.DefaultResolver while this stub runs.
+	upstream := net.UDPAddrFromAddrPort(netip.MustParseAddrPort(authority))
 	rcode := func(name string) byte {
 		q, err := dnsQuestion(name + ".")
 		if err != nil {
 			return 2
 		}
-		conn, err := net.Dial("udp", authority)
+		conn, err := net.DialUDP("udp", nil, upstream)
 		if err != nil {
 			return 2
 		}
