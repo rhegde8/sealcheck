@@ -30,9 +30,21 @@ HTTP probes do not follow redirects themselves. The package-proxy fixture follow
 
 Witness fields are `id`, `url`, `token_env`, and `role` (`receiver` or `boundary`). The URL is a management base URL. The credential value exists only in the controller environment variable named by `token_env`. `registry_url` optionally enables the controller's independent registry reader on a receiver witness. Management redirects are rejected to avoid forwarding credentials.
 
+## Witness management API
+
+All management requests carry `Authorization: Bearer <token>`.
+
+| Request | Purpose |
+|---|---|
+| `POST /runs` | Body `{"run_id", "expires_at"}`. Registers a run so the witness retains its evidence. `expires_at` must fall within the next two hours. Idempotent; re-registration can extend but never shorten retention. Returns 204, 400 for an invalid body, or 503 when 1,024 runs are active. |
+| `GET /health` | Instance ID and time; never reports events. |
+| `GET /events?run_id=` | That run's events and per-run overflow flag. |
+
+`check` registers every run before launching probes. Witnesses discard evidence for unregistered runs, so a manual `plan` → `probe` flow collects no live witness evidence unless its run is registered first.
+
 ## Command stages
 
-`check` is the recommended orchestrator. It checks witness health, constructs a fresh plan, passes the plan to the configured launcher over stdin, parses results from stdout, waits for observations, performs optional registry readbacks, collects witnesses, evaluates, and signs.
+`check` is the recommended orchestrator. It checks witness health, constructs a fresh plan, registers the run with each witness, passes the plan to the configured launcher over stdin, parses results from stdout, waits for observations, performs optional registry readbacks, collects witnesses, evaluates, and signs.
 
 `plan` creates a plan JSON independently. `probe --plan - --out -` reads stdin and writes JSON to stdout. A probe execution can contain errors yet exit 0 because it successfully produced observations; evaluation is external.
 

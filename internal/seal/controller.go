@@ -19,45 +19,75 @@ import (
 
 type LaunchFunc func(context.Context, Plan) (Results, error)
 
-func fetchSnapshot(ctx context.Context, cfg WitnessConfig, path, run string) (Snapshot, error) {
-	var s Snapshot
+// Witnesses keep a run's evidence this long after its deadline so final
+// collection after cancellation or expiry still finds it.
+const runRetention = 2 * time.Minute
+
+// managementRequest calls a witness management endpoint. Errors are fixed
+// strings so transport details cannot carry credentials into reports.
+func managementRequest(ctx context.Context, cfg WitnessConfig, method, path string, query url.Values, body, out any) error {
 	token := os.Getenv(cfg.TokenEnv)
 	if len(token) < 16 {
-		return s, fmt.Errorf("%s requires a management token of at least 16 characters", cfg.ID)
+		return fmt.Errorf("%s requires a management token of at least 16 characters", cfg.ID)
 	}
 	u, err := url.Parse(cfg.URL)
 	if err != nil {
-		return s, err
+		return err
 	}
 	u.Path = strings.TrimSuffix(u.Path, "/") + path
-	q := u.Query()
-	q.Set("run_id", run)
-	u.RawQuery = q.Encode()
+	u.RawQuery = query.Encode()
+	var payload io.Reader
+	if body != nil {
+		b, err := json.Marshal(body)
+		if err != nil {
+			return err
+		}
+		payload = bytes.NewReader(b)
+	}
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	req, err := http.NewRequestWithContext(ctx, method, u.String(), payload)
 	if err != nil {
-		return s, err
+		return err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	transport := &http.Transport{Proxy: nil}
 	defer transport.CloseIdleConnections()
 	client := &http.Client{Transport: transport, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}
 	res, err := client.Do(req)
 	if err != nil {
-		return s, errors.New("management endpoint unavailable")
+		return errors.New("management endpoint unavailable")
 	}
 	defer res.Body.Close()
-	if res.StatusCode != 200 {
-		return s, fmt.Errorf("management endpoint returned %d", res.StatusCode)
+	if res.StatusCode != http.StatusOK && res.StatusCode != http.StatusNoContent {
+		return fmt.Errorf("management endpoint returned %d", res.StatusCode)
 	}
-	if err = DecodeJSON(res.Body, &s); err != nil {
-		return s, errors.New("invalid witness snapshot")
+	if out == nil {
+		return nil
+	}
+	if err = DecodeJSON(res.Body, out); err != nil {
+		return errors.New("invalid witness snapshot")
+	}
+	return nil
+}
+
+func fetchSnapshot(ctx context.Context, cfg WitnessConfig, path, run string) (Snapshot, error) {
+	var s Snapshot
+	if err := managementRequest(ctx, cfg, http.MethodGet, path, url.Values{"run_id": {run}}, nil, &s); err != nil {
+		return s, err
 	}
 	if s.Instance == "" || s.Overflow {
 		return s, errors.New("witness restarted or event storage overflowed")
 	}
 	return s, nil
+}
+
+// registerRun asks a witness to retain evidence for run until expires.
+func registerRun(ctx context.Context, cfg WitnessConfig, run string, expires time.Time) error {
+	return managementRequest(ctx, cfg, http.MethodPost, "/runs", url.Values{}, Registration{RunID: run, ExpiresAt: expires.UTC()}, nil)
 }
 
 // Check is the trusted control path. launch must enter the workload's actual
@@ -81,6 +111,14 @@ func Check(ctx context.Context, p Policy, key ed25519.PrivateKey, out string, la
 	plan, err := NewPlan(p, time.Now())
 	if err != nil {
 		return Report{}, err
+	}
+	for i, cfg := range p.Witnesses {
+		if witnesses[i].HealthyBefore {
+			if err := registerRun(ctx, cfg, plan.RunID, plan.Deadline.Add(runRetention)); err != nil {
+				witnesses[i].HealthyBefore = false
+				witnesses[i].Error = "run registration failed"
+			}
+		}
 	}
 	runDir := filepath.Join(out, plan.RunID)
 	if err = os.Mkdir(runDir, 0700); err != nil {

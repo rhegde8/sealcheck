@@ -14,7 +14,8 @@
 | Package proxy SSRF behavior | Terraform/Cargo/Ansible-named synthetic handlers | Deny/forward pairs and redirect revalidation |
 | Forward then fail | Receiver logs a canary before returning 500 | Regression verifies FAIL despite local error |
 | Registry upload | Synthetic PUT and external GET of exact bytes | Demo confirms external readback; not a production registry protocol |
-| Missing receiver / overflow / restart | Health and instance continuity | Evaluator prevents PASS |
+| Missing receiver / overflow / restart | Health, instance continuity, and per-run overflow | Evaluator prevents PASS |
+| Canary flood for unregistered runs | Witnesses retain only controller-registered runs | Regression keeps PASS after 10,001 foreign canaries |
 | Report tampering / wrong key / wrong run / wrong policy | Pinned-key signature and context verification | Cryptographic regression suite |
 | Stale observations / reports | Observation and consumption windows | Regression suite |
 | Periodic drift | Serialized checks, diffs, deadline and exit handling | CLI checks; external supervisor required for liveness |

@@ -131,6 +131,28 @@ func failureProbe(args []string) error {
 			}
 		}
 	}
+	if mode == "foreign-flood" {
+		// Valid-looking canaries for runs the controller never registered
+		// must not consume storage that the current run depends on.
+		u, err := url.Parse(plan.Policy.Probes[0].Target)
+		if err != nil {
+			return err
+		}
+		transport := &http.Transport{Proxy: nil}
+		defer transport.CloseIdleConnections()
+		client := &http.Client{Transport: transport, Timeout: time.Second}
+		for i := 0; i < 10001; i++ {
+			q := u.Query()
+			q.Set("canary", "sc1:"+seal.RandomID()+":foreign:"+seal.RandomID())
+			u.RawQuery = q.Encode()
+			res, err := client.Get(u.String())
+			if err != nil {
+				return err
+			}
+			_, _ = io.Copy(io.Discard, res.Body)
+			_ = res.Body.Close()
+		}
+	}
 	if mode == "gate-after" || mode == "stall-after" {
 		if err := notify(); err != nil {
 			return err
@@ -340,7 +362,7 @@ func (f *failureFixture) check(t *testing.T, mode, verdict string, onGate func(*
 func TestCheckFailureHandling(t *testing.T) {
 	for _, fault := range []string{"healthy", "witness-offline", "wrong-token", "witness-dies", "witness-restarts",
 		"runner-crash", "runner-malformed", "runner-oversized", "probe-timeout", "udp-no-receipt",
-		"witness-overflow", "leak-runner-crash", "leak-witness-offline", "interrupted-runner", "leak-interrupted-runner",
+		"witness-overflow", "unregistered-flood", "leak-runner-crash", "leak-witness-offline", "interrupted-runner", "leak-interrupted-runner",
 		"runner-deadline", "leak-runner-deadline"} {
 		t.Run(fault, func(t *testing.T) {
 			f := newFailureFixture(t)
@@ -387,6 +409,9 @@ func TestCheckFailureHandling(t *testing.T) {
 				f.policy.Probes = append(f.policy.Probes, seal.Probe{ID: "udp", Kind: "udp", Network: "4", Target: sink.LocalAddr().String(), Expect: "deny"})
 			case "witness-overflow":
 				mode = "flood"
+				f.policy.Probes[0].Target = f.witness.services.HTTP + "/canary"
+			case "unregistered-flood":
+				mode, verdict = "foreign-flood", "PASS"
 				f.policy.Probes[0].Target = f.witness.services.HTTP + "/canary"
 			case "leak-runner-crash":
 				mode, verdict = "leak-crash", "FAIL"
@@ -441,6 +466,10 @@ func TestCheckFailureHandling(t *testing.T) {
 			case "udp-no-receipt":
 				if report.Results.Probes[1].Outcome != "sent" || len(w.Snapshot.Events) != 0 {
 					t.Fatalf("UDP send without a receipt was not exercised: %+v", report)
+				}
+			case "unregistered-flood":
+				if !w.HealthyBefore || !w.HealthyAfter || w.Snapshot.Overflow || len(w.Snapshot.Events) != 1 {
+					t.Fatalf("foreign canaries disturbed the registered run: %+v", w)
 				}
 			case "witness-overflow":
 				if !w.HealthyBefore || w.HealthyAfter || !w.Snapshot.Overflow || report.Results.Probes[0].Outcome != "success" {
