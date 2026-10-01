@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -13,49 +14,104 @@ import (
 	"time"
 )
 
-const maxEvents = 10000
+const (
+	maxRunEvents  = 1024
+	maxActiveRuns = 1024
+	maxRunWindow  = 2 * time.Hour
+)
 
+// Observers retain evidence only for runs a trusted controller registered.
+// Canary-shaped traffic for any other run is dropped, so a workload cannot
+// exhaust storage that later runs depend on.
 type Observer struct {
 	mu       sync.Mutex
 	instance string
+	zone     string
+	runs     map[string]*runState
+}
+
+type runState struct {
+	expires  time.Time
 	events   []Event
 	overflow bool
-	zone     string
 	registry map[string][]byte
 }
 
+type Registration struct {
+	RunID     string    `json:"run_id"`
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
+var errRegistrationFull = errors.New("too many active runs")
+
 func NewObserver(zone string) *Observer {
-	return &Observer{instance: RandomID(), zone: strings.TrimSuffix(zone, "."), events: []Event{}, registry: map[string][]byte{}}
+	return &Observer{instance: RandomID(), zone: strings.TrimSuffix(zone, "."), runs: map[string]*runState{}}
+}
+
+// Register is idempotent; it can extend but never shorten a run's retention.
+func (o *Observer) Register(r Registration, now time.Time) error {
+	if !randomHex.MatchString(r.RunID) || !r.ExpiresAt.After(now) || r.ExpiresAt.After(now.Add(maxRunWindow)) {
+		return errors.New("invalid run registration")
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.prune(now)
+	if s, ok := o.runs[r.RunID]; ok {
+		if r.ExpiresAt.After(s.expires) {
+			s.expires = r.ExpiresAt
+		}
+		return nil
+	}
+	if len(o.runs) >= maxActiveRuns {
+		return errRegistrationFull
+	}
+	o.runs[r.RunID] = &runState{expires: r.ExpiresAt, events: []Event{}, registry: map[string][]byte{}}
+	return nil
+}
+
+// active must be called with o.mu held.
+func (o *Observer) active(run string, now time.Time) *runState {
+	o.prune(now)
+	return o.runs[run]
+}
+
+func (o *Observer) prune(now time.Time) {
+	for id, s := range o.runs {
+		if !now.Before(s.expires) {
+			delete(o.runs, id)
+		}
+	}
 }
 
 func (o *Observer) Record(e Event, action, protocol, remote string) {
+	now := time.Now().UTC()
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	if len(o.events) >= maxEvents {
-		o.overflow = true
+	s := o.active(e.RunID, now)
+	if s == nil {
+		return
+	}
+	if len(s.events) >= maxRunEvents {
+		s.overflow = true
 		return
 	}
 	e.Action = action
 	e.Protocol = protocol
 	e.Remote = remote
-	e.At = time.Now().UTC()
-	o.events = append(o.events, e)
+	e.At = now
+	s.events = append(s.events, e)
 }
 
 func (o *Observer) Snapshot(run string) Snapshot {
+	now := time.Now().UTC()
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	s := Snapshot{Instance: o.instance, At: time.Now().UTC(), Overflow: o.overflow, Events: []Event{}}
-	for _, e := range o.events {
-		if e.RunID == run {
-			if len(s.Events) >= 1024 {
-				s.Overflow = true
-				break
-			}
-			s.Events = append(s.Events, e)
-		}
+	snapshot := Snapshot{Instance: o.instance, At: now, Events: []Event{}}
+	if s := o.active(run, now); s != nil {
+		snapshot.Overflow = s.overflow
+		snapshot.Events = append(snapshot.Events, s.events...)
 	}
-	return s
+	return snapshot
 }
 
 func (o *Observer) Management(token string) http.Handler {
@@ -63,6 +119,26 @@ func (o *Observer) Management(token string) http.Handler {
 		provided := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 		if token == "" || subtle.ConstantTimeCompare([]byte(provided), []byte(token)) != 1 {
 			http.Error(w, "unauthorized", 401)
+			return
+		}
+		if r.URL.Path == "/runs" {
+			if r.Method != http.MethodPost {
+				http.Error(w, "method", 405)
+				return
+			}
+			var registration Registration
+			if err := DecodeJSON(io.LimitReader(r.Body, 4096), &registration); err != nil {
+				http.Error(w, "invalid registration", 400)
+				return
+			}
+			if err := o.Register(registration, time.Now()); errors.Is(err, errRegistrationFull) {
+				http.Error(w, "full", 503)
+				return
+			} else if err != nil {
+				http.Error(w, "invalid registration", 400)
+				return
+			}
+			w.WriteHeader(204)
 			return
 		}
 		if r.Method != http.MethodGet {
@@ -124,21 +200,32 @@ func (o *Observer) registryHTTP(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "invalid object", 400)
 			return
 		}
+		// Unregistered runs get the same response, so the sender learns
+		// nothing about which runs the controller is measuring.
 		o.mu.Lock()
-		if len(o.registry) >= maxEvents {
-			o.overflow = true
-			o.mu.Unlock()
-			http.Error(w, "full", 503)
-			return
+		stored := false
+		if s := o.active(event.RunID, time.Now().UTC()); s != nil {
+			if _, exists := s.registry[r.URL.Path]; !exists && len(s.registry) >= maxRunEvents {
+				s.overflow = true
+			} else {
+				s.registry[r.URL.Path] = append([]byte(nil), b...)
+				stored = true
+			}
 		}
-		o.registry[r.URL.Path] = append([]byte(nil), b...)
 		o.mu.Unlock()
-		o.Record(event, "received", "registry", r.RemoteAddr)
+		if stored {
+			o.Record(event, "received", "registry", r.RemoteAddr)
+		}
 		w.WriteHeader(201)
 	case http.MethodGet:
+		run, _, _ := strings.Cut(strings.TrimPrefix(r.URL.Path, "/registry/"), "/")
 		o.mu.Lock()
-		b, ok := o.registry[r.URL.Path]
-		b = append([]byte(nil), b...)
+		var b []byte
+		ok := false
+		if s := o.active(run, time.Now().UTC()); s != nil {
+			b, ok = s.registry[r.URL.Path]
+			b = append([]byte(nil), b...)
+		}
 		o.mu.Unlock()
 		if !ok {
 			http.NotFound(w, r)
@@ -200,14 +287,9 @@ func (o *Observer) ServeUDP(ctx context.Context, c net.PacketConn, dns bool) err
 			if e, ok := dnsCanary(name, o.zone); ok {
 				o.Record(e, "received", "dns", addr.String())
 			}
-			// NXDOMAIN is intentional: a failed lookup can still leak its query labels.
-			response := append([]byte(nil), b[:end]...)
-			response[2] = 0x84
-			response[3] = 3
-			for i := 6; i < 12; i++ {
-				response[i] = 0
-			}
-			_, _ = c.WriteTo(response, addr)
+			// The lookup still fails for the probe: a negative answer does not
+			// mean its query labels stayed inside the boundary.
+			_, _ = c.WriteTo(dnsResponse(b[:end], name, o.zone), addr)
 		} else if e, ok := ParseCanary(b[:n]); ok {
 			o.Record(e, "received", "udp", addr.String())
 		}

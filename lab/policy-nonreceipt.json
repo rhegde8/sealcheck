@@ -1,9 +1,10 @@
 {
   "version": 1,
-  "name": "linux-sandbox-with-package-proxy-fixtures",
+  "name": "linux-sandbox-non-receipt",
   "timeout_ms": 1000,
   "observation_ms": 200,
   "max_age_seconds": 300,
+  "min_deny_evidence": "non-receipt",
   "witnesses": [
     {"id":"receiver","url":"http://127.0.0.1:18081","token_env":"SEALCHECK_WITNESS_TOKEN","role":"receiver","registry_url":"http://127.0.0.1:18080/registry"},
     {"id":"proxy","url":"http://127.0.0.1:18082","token_env":"SEALCHECK_WITNESS_TOKEN","role":"boundary"}

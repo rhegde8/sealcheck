@@ -187,6 +187,7 @@ func checkCommand(ctx context.Context, name string, args []string) (int, error) 
 	out := f.String("out", "out/checks", "report directory")
 	interval := f.Duration("interval", 5*time.Minute, "watch interval, measured between start times")
 	count := f.Int("count", 0, "watch check limit; 0 runs until interrupted")
+	referenceArgv := f.String("reference-launcher", "", `JSON argv for an unrestricted reference context, e.g. '["docker","exec","-i","ref","sealcheck","probe"]'`)
 	if e := parse(f, args); e != nil {
 		return flagResult(e)
 	}
@@ -208,10 +209,20 @@ func checkCommand(ctx context.Context, name string, args []string) (int, error) 
 		return 2, e
 	}
 	launch := seal.CommandLauncher(f.Args(), p)
+	var reference seal.LaunchFunc
+	if *referenceArgv != "" {
+		var argv []string
+		if e = json.Unmarshal([]byte(*referenceArgv), &argv); e != nil || len(argv) == 0 || argv[0] == "" {
+			return 2, errors.New("--reference-launcher must be a nonempty JSON array of strings")
+		}
+		reference = seal.CommandLauncher(argv, p)
+	} else if p.MinDenyEvidence == "non-receipt" {
+		fmt.Fprintln(os.Stderr, "sealcheck: warning: policy accepts non-receipt evidence but no --reference-launcher was given; direct deny probes need explicit denials")
+	}
 	var previous *seal.Report
 	for n := 0; ; n++ {
 		start := time.Now()
-		r, e := seal.Check(ctx, p, key, *out, launch)
+		r, e := seal.Check(ctx, p, key, *out, launch, reference)
 		if e != nil {
 			return 2, e
 		}
@@ -286,7 +297,7 @@ func evaluateCommand(args []string) (int, error) {
 	if e != nil {
 		return 2, e
 	}
-	r := seal.Evaluate(plan, results, witnesses, time.Now())
+	r := seal.Evaluate(plan, results, witnesses, nil, time.Now())
 	if e = seal.SaveReport(*out, r, key); e != nil {
 		return 2, e
 	}
@@ -352,6 +363,8 @@ func serveCommand(ctx context.Context, name string, args []string) (int, error) 
 	zone := f.String("zone", "canary.test", "controlled DNS zone")
 	upstream := f.String("upstream", "", "fixture's required controlled receiver origin")
 	leaky := f.Bool("leaky", false, "enable deliberately leaky fixture behavior")
+	resolver := f.String("resolver", "", "fixture's DNS server for names it resolves when leaky")
+	authEnv := f.String("auth-token-env", "", "environment variable holding a bearer token fixture routes require")
 	if e := parse(f, args); e != nil {
 		return flagResult(e)
 	}
@@ -362,6 +375,14 @@ func serveCommand(ctx context.Context, name string, args []string) (int, error) 
 	} else {
 		var fixture *seal.Fixture
 		fixture, e = seal.NewFixture(*upstream, *leaky)
+		if e == nil && *resolver != "" {
+			fixture.Resolver = seal.UDPResolver(*resolver)
+		}
+		if e == nil && *authEnv != "" {
+			if fixture.AuthToken = os.Getenv(*authEnv); fixture.AuthToken == "" {
+				e = errors.New("fixture auth token variable is empty")
+			}
+		}
 		if e == nil {
 			s, e = seal.StartFixture(ctx, fixture, *listen, *management, os.Getenv(*tokenEnv))
 		}

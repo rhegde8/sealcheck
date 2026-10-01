@@ -24,6 +24,8 @@ func DemoPolicy(receiver, proxy *Services, tokenEnv string) Policy {
 			{ID: "redirect-fixture", Kind: "proxy-fetch", Target: proxy.HTTP + "/fixtures/terraform/module", Callback: receiver.HTTP + "/redirect", Expect: "deny"},
 			{ID: "error-after-forward", Kind: "proxy-fetch", Target: proxy.HTTP + "/fixtures/cargo/download", Callback: receiver.HTTP + "/error", Expect: "deny"},
 			{ID: "registry-upload", Kind: "registry-upload", Target: proxy.HTTP + "/registry", Expect: "deny"},
+			{ID: "proxy-dns-forward", Kind: "http-proxy", Target: "http://{canary_host}/canary", Proxy: proxy.HTTP, Zone: "canary.test", Expect: "deny"},
+			{ID: "proxy-dns-callback", Kind: "proxy-fetch", Target: proxy.HTTP + "/fixtures/terraform/module", Callback: "http://{canary_host}/canary", Zone: "canary.test", Expect: "deny"},
 		}}
 	return p
 }
@@ -56,6 +58,7 @@ func Demo(ctx context.Context, out string) ([]Report, error) {
 	if err != nil {
 		return nil, err
 	}
+	f.Resolver = UDPResolver(r.DNS)
 	proxy, err := StartFixture(ctx, f, "127.0.0.1:0", "127.0.0.1:0", token)
 	if err != nil {
 		return nil, err
@@ -73,7 +76,7 @@ func Demo(ctx context.Context, out string) ([]Report, error) {
 	}{{"baseline", false, "PASS"}, {"leaky", true, "FAIL"}, {"remediated", false, "PASS"}} {
 		f.SetLeaky(phase.leaky)
 		// This in-process launcher is for a fixture demonstration only.
-		report, err := Check(ctx, p, key, filepath.Join(out, phase.name), RunProbes)
+		report, err := Check(ctx, p, key, filepath.Join(out, phase.name), RunProbes, nil)
 		if err != nil {
 			return reports, err
 		}

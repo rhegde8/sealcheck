@@ -19,40 +19,65 @@ import (
 
 type LaunchFunc func(context.Context, Plan) (Results, error)
 
-func fetchSnapshot(ctx context.Context, cfg WitnessConfig, path, run string) (Snapshot, error) {
-	var s Snapshot
+// Witnesses keep a run's evidence this long after its deadline so final
+// collection after cancellation or expiry still finds it.
+const runRetention = 2 * time.Minute
+
+// managementRequest calls a witness management endpoint. Errors are fixed
+// strings so transport details cannot carry credentials into reports.
+func managementRequest(ctx context.Context, cfg WitnessConfig, method, path string, query url.Values, body, out any) error {
 	token := os.Getenv(cfg.TokenEnv)
 	if len(token) < 16 {
-		return s, fmt.Errorf("%s requires a management token of at least 16 characters", cfg.ID)
+		return fmt.Errorf("%s requires a management token of at least 16 characters", cfg.ID)
 	}
 	u, err := url.Parse(cfg.URL)
 	if err != nil {
-		return s, err
+		return err
 	}
 	u.Path = strings.TrimSuffix(u.Path, "/") + path
-	q := u.Query()
-	q.Set("run_id", run)
-	u.RawQuery = q.Encode()
+	u.RawQuery = query.Encode()
+	var payload io.Reader
+	if body != nil {
+		b, err := json.Marshal(body)
+		if err != nil {
+			return err
+		}
+		payload = bytes.NewReader(b)
+	}
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	req, err := http.NewRequestWithContext(ctx, method, u.String(), payload)
 	if err != nil {
-		return s, err
+		return err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	transport := &http.Transport{Proxy: nil}
 	defer transport.CloseIdleConnections()
 	client := &http.Client{Transport: transport, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}
 	res, err := client.Do(req)
 	if err != nil {
-		return s, errors.New("management endpoint unavailable")
+		return errors.New("management endpoint unavailable")
 	}
 	defer res.Body.Close()
-	if res.StatusCode != 200 {
-		return s, fmt.Errorf("management endpoint returned %d", res.StatusCode)
+	if res.StatusCode != http.StatusOK && res.StatusCode != http.StatusNoContent {
+		return fmt.Errorf("management endpoint returned %d", res.StatusCode)
 	}
-	if err = DecodeJSON(res.Body, &s); err != nil {
-		return s, errors.New("invalid witness snapshot")
+	if out == nil {
+		return nil
+	}
+	if err = DecodeJSON(res.Body, out); err != nil {
+		return errors.New("invalid witness snapshot")
+	}
+	return nil
+}
+
+func fetchSnapshot(ctx context.Context, cfg WitnessConfig, path, run string) (Snapshot, error) {
+	var s Snapshot
+	if err := managementRequest(ctx, cfg, http.MethodGet, path, url.Values{"run_id": {run}}, nil, &s); err != nil {
+		return s, err
 	}
 	if s.Instance == "" || s.Overflow {
 		return s, errors.New("witness restarted or event storage overflowed")
@@ -60,9 +85,18 @@ func fetchSnapshot(ctx context.Context, cfg WitnessConfig, path, run string) (Sn
 	return s, nil
 }
 
+// registerRun asks a witness to retain evidence for run until expires.
+func registerRun(ctx context.Context, cfg WitnessConfig, run string, expires time.Time) error {
+	return managementRequest(ctx, cfg, http.MethodPost, "/runs", url.Values{}, Registration{RunID: run, ExpiresAt: expires.UTC()}, nil)
+}
+
 // Check is the trusted control path. launch must enter the workload's actual
 // security context; the local demo's launcher intentionally offers no isolation.
-func Check(ctx context.Context, p Policy, key ed25519.PrivateKey, out string, launch LaunchFunc) (Report, error) {
+//
+// reference, when non-nil, launches the policy's direct deny probes from an
+// unrestricted context as a positive control for non-receipt evidence. It
+// runs after the measured launcher, within the measured plan's deadline.
+func Check(ctx context.Context, p Policy, key ed25519.PrivateKey, out string, launch, reference LaunchFunc) (Report, error) {
 	if err := p.Validate(); err != nil {
 		return Report{}, err
 	}
@@ -82,6 +116,14 @@ func Check(ctx context.Context, p Policy, key ed25519.PrivateKey, out string, la
 	if err != nil {
 		return Report{}, err
 	}
+	for i, cfg := range p.Witnesses {
+		if witnesses[i].HealthyBefore {
+			if err := registerRun(ctx, cfg, plan.RunID, plan.Deadline.Add(runRetention)); err != nil {
+				witnesses[i].HealthyBefore = false
+				witnesses[i].Error = "run registration failed"
+			}
+		}
+	}
 	runDir := filepath.Join(out, plan.RunID)
 	if err = os.Mkdir(runDir, 0700); err != nil {
 		return Report{}, err
@@ -92,6 +134,10 @@ func Check(ctx context.Context, p Policy, key ed25519.PrivateKey, out string, la
 	runCtx, cancel := context.WithDeadline(ctx, plan.Deadline)
 	defer cancel()
 	results, launchErr := launch(runCtx, plan)
+	var ref *Reference
+	if reference != nil && runCtx.Err() == nil {
+		ref = runReference(runCtx, p, witnesses, plan, reference)
+	}
 	// Complete evidence collection after probe failures. Observed leaks take precedence.
 	timer := time.NewTimer(time.Duration(p.ObservationMS) * time.Millisecond)
 	select {
@@ -123,7 +169,14 @@ func Check(ctx context.Context, p Policy, key ed25519.PrivateKey, out string, la
 		}
 		w.Snapshot = s
 	}
-	report := Evaluate(plan, results, witnesses, time.Now())
+	if ref != nil {
+		for _, cfg := range p.Witnesses {
+			if s, err := fetchSnapshot(evidenceCtx, cfg, "/events", ref.Plan.RunID); err == nil {
+				ref.Snapshots[cfg.ID] = s
+			}
+		}
+	}
+	report := Evaluate(plan, results, witnesses, ref, time.Now())
 	if launchErr != nil {
 		report.Errors = append(report.Errors, "launcher failed or returned invalid output")
 		if report.Verdict != "FAIL" {
@@ -144,6 +197,28 @@ func Check(ctx context.Context, p Policy, key ed25519.PrivateKey, out string, la
 		return report, err
 	}
 	return report, nil
+}
+
+func runReference(ctx context.Context, p Policy, witnesses []Witness, main Plan, launch LaunchFunc) *Reference {
+	plan, ok, err := NewReferencePlan(main, time.Now())
+	if err != nil || !ok {
+		return nil
+	}
+	ref := &Reference{Plan: plan, Snapshots: map[string]Snapshot{}}
+	for i, cfg := range p.Witnesses {
+		if witnesses[i].HealthyBefore && registerRun(ctx, cfg, plan.RunID, plan.Deadline.Add(runRetention)) != nil {
+			ref.Error = "reference run registration failed"
+		}
+	}
+	refCtx, cancel := context.WithDeadline(ctx, plan.Deadline)
+	defer cancel()
+	results, err := launch(refCtx, plan)
+	if err != nil {
+		ref.Error = "reference launcher failed or returned invalid output"
+		return ref
+	}
+	ref.Results = results
+	return ref
 }
 
 // Readback runs outside the sandbox and checks the exact synthetic bytes.
@@ -200,7 +275,11 @@ func Summary(r Report) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s — %s\nRun: %s\nPolicy SHA-256: %s\nObserved: %s to %s\nIdentity: uid=%d euid=%d (%s)\n", r.Verdict, r.Plan.Policy.Name, r.Plan.RunID, r.Plan.PolicySHA256, r.Plan.CreatedAt.Format(time.RFC3339), r.IssuedAt.Format(time.RFC3339), r.Results.Identity.UID, r.Results.Identity.EUID, r.Results.Identity.Source)
 	for _, f := range r.Findings {
-		fmt.Fprintf(&b, "  %-12s %-24s %s\n", f.Verdict, f.ID, f.Reason)
+		verdict := f.Verdict
+		if f.Grade != "" {
+			verdict += " (" + f.Grade + ")"
+		}
+		fmt.Fprintf(&b, "  %-12s %-24s %s\n", verdict, f.ID, f.Reason)
 	}
 	for _, e := range r.Errors {
 		fmt.Fprintf(&b, "  ERROR: %s\n", e)

@@ -3,19 +3,25 @@
 | Channel or failure | Implemented measurement | Validation |
 |---|---|---|
 | TCP IPv4/IPv6 | Connection plus synthetic canary write | Portable TCP control; IPv6 regression; Linux leak/remediation profile |
-| UDP IPv4/IPv6 | Synthetic datagram plus independent receipt | UDP integration; no-ack regression; Linux profile |
-| Direct DNS | Synthetic labels at controlled authoritative server | NXDOMAIN receiver and correlated receipt |
-| System-configured DNS | Go resolver using sandbox resolver configuration | NXDOMAIN integration and Linux profile |
+| UDP IPv4/IPv6 | Three synthetic datagrams plus independent receipt | UDP integration; no-ack regression; Linux profile |
+| Direct DNS | Synthetic labels at controlled authoritative server | Authoritative NODATA receiver and correlated receipt |
+| System-configured DNS | Go resolver using sandbox resolver configuration | Negative-answer integration and Linux profile |
+| DNS via minimizing recursive resolver | Receiver answers in-zone names with authoritative NODATA, so RFC 9156 resolvers continue to the full canary name instead of stopping at an NXDOMAIN cut | Label-by-label recursive stub regression |
 | DNS tunneling primitive | Synthetic information carried in query labels | Demonstrates query-label delivery, not arbitrary tunneling throughput |
 | Direct HTTP(S) | Explicit direct transport | Proxy-environment regression; Linux direct HTTP profile; normal TLS verification |
 | HTTP forward proxy | Explicit transport through selected proxy | Portable allow/deny fixture |
 | HTTPS CONNECT | Go transport support | Fixture rejects CONNECT; no dedicated CONNECT success fixture yet |
 | Package proxy SSRF behavior | Terraform/Cargo/Ansible-named synthetic handlers | Deny/forward pairs and redirect revalidation |
+| Proxy-side resolution of canary hostnames | `{canary_host}` targets and callbacks; DNS receipts count as delivery | Demo and lab leaky fixture resolves before denying (destination-IP ACL behavior) |
+| Authenticated proxy probes | `credential_env` read inside the sandbox; value never serialized | Credential present/missing/wrong regression and output scan |
+| Arbitrary handler injection points | Templated `proxy-fetch` with `{callback}` in path, query, or header | Path and header injection regression |
 | Forward then fail | Receiver logs a canary before returning 500 | Regression verifies FAIL despite local error |
 | Registry upload | Synthetic PUT and external GET of exact bytes | Demo confirms external readback; not a production registry protocol |
-| Missing receiver / overflow / restart | Health and instance continuity | Evaluator prevents PASS |
+| Missing receiver / overflow / restart | Health, instance continuity, and per-run overflow | Evaluator prevents PASS |
+| Canary flood for unregistered runs | Witnesses retain only controller-registered runs | Regression keeps PASS after 10,001 foreign canaries |
 | Report tampering / wrong key / wrong run / wrong policy | Pinned-key signature and context verification | Cryptographic regression suite |
 | Stale observations / reports | Observation and consumption windows | Regression suite |
+| Non-receipt with reference control | Opt-in grade for direct deny probes; same probe definitions delivered from an unrestricted reference context and seen by the same witness instance | Evaluator table, signed-grade binding, in-process check, Linux `unreachable` phases |
 | Periodic drift | Serialized checks, diffs, deadline and exit handling | CLI checks; external supervisor required for liveness |
 
 ## Reproduction levels
@@ -29,7 +35,7 @@ Docker was unavailable in the initial development environment. The complete Linu
 
 ## Local Linux lab validation
 
-Validated on 2026-10-01 with `DOCKER_CONTEXT=colima-sealcheck make lab`. The host was macOS 27.0 on Apple Silicon. The Colima VM used native ARM64, Apple's VZ backend, 2 CPUs, 4 GiB RAM, and a 30 GiB data disk, running Ubuntu 24.04.4 LTS with Linux kernel `6.8.0-117-generic`.
+Last validated on 2026-10-01 with `DOCKER_CONTEXT=colima-sealcheck make lab` (tool version 0.2.0). The host was macOS 27.0 on Apple Silicon. The Colima VM used native ARM64, Apple's VZ backend, 2 CPUs, 4 GiB RAM, and a 30 GiB data disk, running Ubuntu 24.04.4 LTS with Linux kernel `6.8.0-117-generic`.
 
 | Tool | Tested version |
 |---|---|
@@ -41,17 +47,21 @@ Validated on 2026-10-01 with `DOCKER_CONTEXT=colima-sealcheck make lab`. The hos
 | Docker Buildx | 0.37.2 |
 | Host Go | 1.27.1 |
 
-| Phase | Observed verdict |
-|---|---|
-| Baseline | PASS |
-| Proxy leak | FAIL |
-| Remediated proxy | PASS |
-| Direct IPv4/IPv6 leaks | FAIL |
-| Restored routes | PASS |
+| Phase | Policy | Observed verdict |
+|---|---|---|
+| Baseline | explicit-denial | PASS |
+| Proxy leak | explicit-denial | FAIL (including `proxy-dns-forward` and `proxy-dns-callback` via DNS receipts) |
+| Remediated proxy | explicit-denial | PASS |
+| Direct IPv4/IPv6 leaks | explicit-denial | FAIL |
+| Restored routes | explicit-denial | PASS |
+| `unreachable` routes | explicit-denial | INCONCLUSIVE (EHOSTUNREACH is not an explicit denial) |
+| `unreachable` routes | non-receipt + reference | PASS, with grade `non-receipt` on all seven direct deny probes |
+| Routes removed | non-receipt + reference | FAIL (non-receipt mode does not mask leaks) |
+| `prohibit` restored | non-receipt + reference | PASS (explicit denials, no grade) |
 
 The direct-leak report independently recorded forbidden canary delivery for TCP and UDP over both IPv4 and IPv6, direct and system-configured DNS, and direct HTTP. Every phase reported UID/EUID/GID 10001, effective capabilities `0000000000000000`, `NoNewPrivs: 1`, and seccomp mode 2; these remain runner-reported identity observations.
 
-All five bundles passed `sealcheck verify --historical` with the controller's separately generated public key. Historical verification establishes signature validity and evidence consistency; it does not authorize a current evaluation. Containers and lab networks were removed, and Colima is run on demand. Reports and keys are retained locally under `out/lab-20261001T044855Z/`, which is ignored by Git.
+All nine bundles passed `sealcheck verify --historical` with the controller's separately generated public key, and the five bundles from the earlier 0.1.0 run still verify with the 0.2.0 binary. Historical verification establishes signature validity and evidence consistency; it does not authorize a current evaluation. Containers and lab networks were removed, and Colima is run on demand. Reports and keys are retained locally under `out/lab-20261001T060847Z/` (and the earlier `out/lab-20261001T044855Z/`), which are ignored by Git.
 
 The first executions exposed three lab startup issues, now fixed: protocol-name lookup in the minimal Debian image, writes to the read-only resolver file, and host port publishing on internal-only witness networks. The initializer uses TCP protocol number 6, Compose mounts the controlled resolver configuration read-only, and trusted witnesses join a separate management bridge. The sandbox retains its internal data network and IPv4/IPv6 prohibit routes.
 

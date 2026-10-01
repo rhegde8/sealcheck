@@ -167,7 +167,7 @@ func Verify(bundle Bundle, public ed25519.PublicKey, opts VerifyOptions) (Report
 		}
 	}
 	// Even a valid signature must not mask a malformed/inconsistent verdict.
-	expected := Evaluate(report.Plan, report.Results, report.Witnesses, report.IssuedAt)
+	expected := Evaluate(report.Plan, report.Results, report.Witnesses, report.Reference, report.IssuedAt)
 	// Controller interruption can conservatively downgrade a complete probe set.
 	if expected.Verdict == "PASS" && len(report.Errors) > 0 {
 		expected.Verdict = "INCONCLUSIVE"

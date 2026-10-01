@@ -35,12 +35,19 @@ ready() {
   done
 }
 
+# check PHASE EXPECTED_EXIT [POLICY] [reference]
 check() {
   phase="$1"
   expected="$2"
+  policy="${3:-lab/policy.json}"
+  use_reference="${4:-}"
   container="$(compose ps -q sandbox)"
+  set -- --policy "$policy" --private-key "$out/controller.key.pem" --out "$out/$phase"
+  if [ "$use_reference" = reference ]; then
+    set -- "$@" --reference-launcher "[\"docker\",\"exec\",\"-i\",\"$(compose ps -q reference)\",\"sealcheck\",\"probe\"]"
+  fi
   set +e
-  bin/sealcheck check --policy lab/policy.json --private-key "$out/controller.key.pem" --out "$out/$phase" -- \
+  bin/sealcheck check "$@" -- \
     docker exec -i --user 0 "$container" \
     setpriv --reuid 10001 --regid 10001 --clear-groups --bounding-set=-all --inh-caps=-all --ambient-caps=-all --no-new-privs sealcheck probe
   actual=$?
@@ -64,4 +71,20 @@ check direct-leak 1
 compose exec -T --user 0 sandbox ip route add prohibit 172.30.56.30/32
 compose exec -T --user 0 sandbox ip -6 route add prohibit fd53:ea1:56::30/128
 check restored 0
-echo "Verified baseline, proxy leak, remediation, direct leaks, and restoration. Reports: $out"
+
+# EHOSTUNREACH blocks delivery but, unlike prohibit's EACCES, does not prove a
+# policy denial. Explicit-only evidence stays INCONCLUSIVE; the non-receipt
+# policy passes once the reference context proves each target live.
+compose exec -T --user 0 sandbox ip route replace unreachable 172.30.56.30/32
+compose exec -T --user 0 sandbox ip -6 route replace unreachable fd53:ea1:56::30/128
+check unreachable-explicit 2
+check unreachable-non-receipt 0 lab/policy-nonreceipt.json reference
+
+# Non-receipt mode must not mask a real leak.
+compose exec -T --user 0 sandbox ip route del unreachable 172.30.56.30/32
+compose exec -T --user 0 sandbox ip -6 route del unreachable fd53:ea1:56::30/128
+check non-receipt-leak 1 lab/policy-nonreceipt.json reference
+compose exec -T --user 0 sandbox ip route add prohibit 172.30.56.30/32
+compose exec -T --user 0 sandbox ip -6 route add prohibit fd53:ea1:56::30/128
+check non-receipt-restored 0 lab/policy-nonreceipt.json reference
+echo "Verified baseline, proxy leak, remediation, direct leaks, restoration, and non-receipt grading. Reports: $out"

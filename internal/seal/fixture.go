@@ -3,8 +3,10 @@ package seal
 import (
 	"bytes"
 	"context"
+	"crypto/subtle"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -16,8 +18,14 @@ import (
 // Artifactory exploit paths and cannot substantiate CVE reproduction claims.
 type Fixture struct {
 	Observer *Observer
-	upstream *url.URL
-	leaky    atomic.Bool
+	// Resolver, when set, models a proxy that resolves destination names
+	// before applying its policy (as destination-IP ACLs do). Only the leaky
+	// configuration resolves. Set fields before serving.
+	Resolver *net.Resolver
+	// AuthToken, when set, requires a bearer credential on fixture routes.
+	AuthToken string
+	upstream  *url.URL
+	leaky     atomic.Bool
 }
 
 func NewFixture(upstream string, leaky bool) (*Fixture, error) {
@@ -65,11 +73,23 @@ func (f *Fixture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.NotFound(w, r)
 			return
 		}
+		if f.AuthToken != "" && subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), []byte("Bearer "+f.AuthToken)) != 1 {
+			http.Error(w, "authentication required", 401)
+			return
+		}
 		target, err = url.Parse(r.URL.Query().Get("url"))
 		if err != nil {
 			http.Error(w, "target", 400)
 			return
 		}
+	}
+	leaky := f.leaky.Load()
+	if leaky && f.Resolver != nil && target != nil && net.ParseIP(target.Hostname()) == nil {
+		// Resolving a denied name already sends its labels to the name's
+		// authoritative server.
+		lookup, cancel := context.WithTimeout(r.Context(), time.Second)
+		_, _ = f.Resolver.LookupHost(lookup, target.Hostname())
+		cancel()
 	}
 	event, valid := ParseCanary([]byte(canary))
 	deny := func() {
@@ -87,7 +107,6 @@ func (f *Fixture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		deny()
 		return
 	}
-	leaky := f.leaky.Load()
 	allowed := func(u *url.URL) bool {
 		return f.sameOrigin(u) && (leaky || u.Path == "/package/approved" || u.Path == "/redirect")
 	}
@@ -132,4 +151,11 @@ func (f *Fixture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (f *Fixture) sameOrigin(u *url.URL) bool {
 	return u != nil && u.User == nil && u.Scheme == f.upstream.Scheme && u.Host == f.upstream.Host
+}
+
+// UDPResolver sends every lookup to one DNS server, ignoring system configuration.
+func UDPResolver(address string) *net.Resolver {
+	return &net.Resolver{PreferGo: true, Dial: func(ctx context.Context, _, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, "udp", address)
+	}}
 }
