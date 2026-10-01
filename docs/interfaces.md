@@ -10,6 +10,7 @@ Policies are JSON, parsed with unknown-field rejection. See `lab/policy.json` fo
 | `timeout_ms` | Per-probe deadline, 10–30000 ms. |
 | `observation_ms` | External observation grace period, 0–30000 ms. |
 | `max_age_seconds` | Maximum age when consuming a report, 1–86400 seconds. |
+| `min_deny_evidence` | Optional. `explicit-denial` (the default) or `non-receipt`. See [evidence grades](#evidence-grades). `non-receipt` requires `observation_ms` of at least 100. |
 | `probes` | 1–128 probes; at least one required. |
 | `witnesses` | 1–8 externally managed witnesses. |
 
@@ -63,6 +64,20 @@ All management requests carry `Authorization: Bearer <token>`.
 | `GET /events?run_id=` | That run's events and per-run overflow flag. |
 
 `check` registers every run before launching probes. Witnesses discard evidence for unregistered runs, so a manual `plan` → `probe` flow collects no live witness evidence unless its run is registered first.
+
+## Evidence grades
+
+By default, a `deny` probe passes only on an explicit kernel `EACCES`/`EPERM` or a boundary-witness denial. Many correctly sealed sandboxes instead fail ambiguously: `ENETUNREACH`, `EHOSTUNREACH`, a refused connection, or a silent drop. With `min_deny_evidence: non-receipt`, a direct deny probe (`tcp`, `udp`, `dns`, `dns-system`, `http`) can also pass with grade `non-receipt` when all of the following hold:
+
+- The runner attempted the probe (outcome `error` or `sent`) and no witness observed its canary.
+- A **reference run** delivered the same probe, with an identical definition but its own run ID and canary, from an unrestricted context during the same check.
+- The witness that recorded the reference delivery is the same instance that watched the measured run, with no overflow.
+
+The reference proves each target was live and correctly addressed, so an absent canary means something. Proxy kinds never pass on non-receipt, because a wrong handler path or proxy address looks the same as a denial. Leak precedence is unchanged: any receipt still FAILs.
+
+`check` and `watch` accept `--reference-launcher` as a JSON argv array, for example `'["docker","exec","-i","reference","sealcheck","probe"]'`. The reference runs after the measured launcher, inside the measured plan's deadline, and receives only the eligible probes. A failed reference leaves the affected findings INCONCLUSIVE.
+
+A finding's `grade` is `non-receipt` only for that kind of pass. An absent grade on a deny PASS means an explicit denial, so earlier reports verify unchanged. The report's `reference` holds the reference plan, its runner results, and each witness's snapshot for the reference run. The verifier recomputes grades from that evidence, so a grade cannot be added or removed after signing.
 
 ## Command stages
 

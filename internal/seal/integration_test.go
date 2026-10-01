@@ -95,7 +95,7 @@ func TestIPv6LeakDespiteIPv4Denial(t *testing.T) {
 		t.Fatal(err)
 	}
 	r.Probes = append(r.Probes, Result{ID: "ipv6", StartedAt: p.CreatedAt, FinishedAt: n, Outcome: outcome})
-	if got := Evaluate(p, r, w, time.Now().Add(10*time.Millisecond)); got.Verdict != "FAIL" {
+	if got := Evaluate(p, r, w, nil, time.Now().Add(10*time.Millisecond)); got.Verdict != "FAIL" {
 		t.Fatal(got)
 	}
 }
@@ -116,7 +116,7 @@ func TestDNSSystemNegativeAnswerStillLeaks(t *testing.T) {
 	t.Setenv("TEST_WITNESS_TOKEN", "test-witness-token")
 	p := Policy{Version: 1, Name: "dns-system", TimeoutMS: 1000, ObservationMS: 10, MaxAgeSeconds: 300, Probes: []Probe{{ID: "dns", Kind: "dns-system", Zone: "canary.test", Expect: "deny"}}, Witnesses: []WitnessConfig{{ID: "receiver", URL: s.Management, TokenEnv: "TEST_WITNESS_TOKEN", Role: "receiver"}}}
 	_, key, _ := ed25519.GenerateKey(rand.Reader)
-	r, err := Check(ctx, p, key, t.TempDir(), RunProbes)
+	r, err := Check(ctx, p, key, t.TempDir(), RunProbes, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -345,11 +345,69 @@ func TestDNSSystemThroughMinimizingResolver(t *testing.T) {
 	t.Setenv("TEST_WITNESS_TOKEN", "test-witness-token")
 	p := Policy{Version: 1, Name: "dns-minimized", TimeoutMS: 2000, ObservationMS: 10, MaxAgeSeconds: 300, Probes: []Probe{{ID: "dns", Kind: "dns-system", Zone: "canary.test", Expect: "deny"}}, Witnesses: []WitnessConfig{{ID: "receiver", URL: s.Management, TokenEnv: "TEST_WITNESS_TOKEN", Role: "receiver"}}}
 	_, key, _ := ed25519.GenerateKey(rand.Reader)
-	r, err := Check(ctx, p, key, t.TempDir(), RunProbes)
+	r, err := Check(ctx, p, key, t.TempDir(), RunProbes, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if r.Verdict != "FAIL" {
 		t.Fatalf("minimizing resolver hid the leaked canary: %+v", r)
+	}
+}
+
+// blockedLauncher models a sandbox whose network fails ambiguously (for
+// example EHOSTUNREACH or a silent drop): every probe errors and nothing leaves.
+func blockedLauncher(_ context.Context, plan Plan) (Results, error) {
+	r := Results{Version: Version, RunID: plan.RunID, PolicySHA256: plan.PolicySHA256, Identity: CurrentIdentity(), Probes: []Result{}}
+	for _, q := range plan.Policy.Probes {
+		now := time.Now().UTC()
+		r.Probes = append(r.Probes, Result{ID: q.ID, StartedAt: now, FinishedAt: now, Outcome: "error", Detail: "operation failed; no denial established"})
+	}
+	return r, nil
+}
+
+func TestCheckNonReceiptWithReference(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s, err := StartReceiver(ctx, ReceiverOptions{HTTP: "127.0.0.1:0", Management: "127.0.0.1:0", TCP: "127.0.0.1:0", UDP: "127.0.0.1:0", DNS: "127.0.0.1:0", Zone: "canary.test", Token: "test-witness-token"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	t.Setenv("TEST_WITNESS_TOKEN", "test-witness-token")
+	p := Policy{Version: 1, Name: "non-receipt", TimeoutMS: 1000, ObservationMS: 100, MaxAgeSeconds: 300, MinDenyEvidence: "non-receipt",
+		Probes: []Probe{
+			{ID: "tcp", Kind: "tcp", Network: "4", Target: s.TCP, Expect: "deny"},
+			{ID: "udp", Kind: "udp", Network: "4", Target: s.UDP, Expect: "deny"},
+			{ID: "dns", Kind: "dns", Target: s.DNS, Zone: "canary.test", Expect: "deny"},
+			{ID: "http", Kind: "http", Target: s.HTTP + "/canary", Expect: "deny"},
+		},
+		Witnesses: []WitnessConfig{{ID: "receiver", URL: s.Management, TokenEnv: "TEST_WITNESS_TOKEN", Role: "receiver"}}}
+	_, key, _ := ed25519.GenerateKey(rand.Reader)
+	for _, tt := range []struct {
+		name              string
+		launch, reference LaunchFunc
+		verdict, grade    string
+	}{
+		{"blocked with live reference", blockedLauncher, RunProbes, "PASS", "non-receipt"},
+		{"blocked without reference", blockedLauncher, nil, "INCONCLUSIVE", ""},
+		{"leaking with live reference", RunProbes, RunProbes, "FAIL", ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			r, err := Check(ctx, p, key, t.TempDir(), tt.launch, tt.reference)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if r.Verdict != tt.verdict {
+				t.Fatalf("want %s, got %s: %+v", tt.verdict, r.Verdict, r.Findings)
+			}
+			for _, f := range r.Findings {
+				if f.Grade != tt.grade {
+					t.Fatalf("%s: want grade %q, got %q", f.ID, tt.grade, f.Grade)
+				}
+			}
+			if tt.reference != nil && (r.Reference == nil || r.Reference.Plan.RunID == r.Plan.RunID) {
+				t.Fatal("reference run missing or not distinct")
+			}
+		})
 	}
 }

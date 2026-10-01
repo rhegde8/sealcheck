@@ -10,9 +10,20 @@ import (
 
 func evidence(t *testing.T, kind, expect, outcome string) (Plan, Results, []Witness, time.Time) {
 	t.Helper()
+	return evidenceWith(t, kind, expect, outcome, nil)
+}
+
+func evidenceWith(t *testing.T, kind, expect, outcome string, mutate func(*Policy)) (Plan, Results, []Witness, time.Time) {
+	t.Helper()
 	p := Policy{Version: 1, Name: "test", TimeoutMS: 100, ObservationMS: 1, MaxAgeSeconds: 300, Probes: []Probe{{ID: "probe", Kind: kind, Target: "127.0.0.1:9999", Expect: expect}}, Witnesses: []WitnessConfig{{ID: "receiver", URL: "http://127.0.0.1:1", TokenEnv: "TOKEN", Role: "receiver"}, {ID: "boundary", URL: "http://127.0.0.1:2", TokenEnv: "TOKEN", Role: "boundary"}}}
 	if kind == "http" {
 		p.Probes[0].Target = "http://127.0.0.1:9999/canary"
+	}
+	if kind == "http-proxy" {
+		p.Probes[0].Target, p.Probes[0].Proxy = "http://127.0.0.1:9999/canary", "http://127.0.0.1:9998"
+	}
+	if mutate != nil {
+		mutate(&p)
 	}
 	now := time.Now().UTC()
 	plan, err := NewPlan(p, now)
@@ -89,7 +100,7 @@ func TestEvaluationEvidencePrecedence(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			p, r, w, n := evidence(t, "http", "deny", "error")
 			tt.mutate(p, &r, w, n)
-			got := Evaluate(p, r, w, n)
+			got := Evaluate(p, r, w, nil, n)
 			if got.Verdict != tt.want {
 				t.Fatalf("want %s, got %s: %+v", tt.want, got.Verdict, got)
 			}
@@ -99,18 +110,18 @@ func TestEvaluationEvidencePrecedence(t *testing.T) {
 
 func TestUDPNeedsExternalReceipt(t *testing.T) {
 	p, r, w, n := evidence(t, "udp", "deny", "sent")
-	if got := Evaluate(p, r, w, n); got.Verdict != "INCONCLUSIVE" {
+	if got := Evaluate(p, r, w, nil, n); got.Verdict != "INCONCLUSIVE" {
 		t.Fatal(got.Verdict)
 	}
 	w[0].Snapshot.Events = append(w[0].Snapshot.Events, receipt(p, "received", "udp", n))
-	if got := Evaluate(p, r, w, n); got.Verdict != "FAIL" {
+	if got := Evaluate(p, r, w, nil, n); got.Verdict != "FAIL" {
 		t.Fatal(got.Verdict)
 	}
 }
 
 func TestSignedReportBindingAndTampering(t *testing.T) {
 	p, r, w, n := evidence(t, "http", "deny", "denied")
-	report := Evaluate(p, r, w, n)
+	report := Evaluate(p, r, w, nil, n)
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
 	bundle, err := Sign(report, priv)
 	if err != nil {
@@ -186,5 +197,130 @@ func TestPolicyRejectsAmbiguousInputs(t *testing.T) {
 				t.Fatal("invalid policy accepted")
 			}
 		})
+	}
+}
+
+func optIn(p *Policy) { p.MinDenyEvidence, p.ObservationMS = "non-receipt", 100 }
+
+// reference builds a positive control for the main plan with one delivery.
+func reference(t *testing.T, p Plan, protocol string, n time.Time) *Reference {
+	t.Helper()
+	q := p.Policy
+	optIn(&q)
+	main := p
+	main.Policy = q
+	rp, ok, err := NewReferencePlan(main, p.CreatedAt.Add(time.Millisecond))
+	if err != nil || !ok {
+		t.Fatalf("reference plan not created: %v", err)
+	}
+	receipt := Event{RunID: rp.RunID, ProbeID: "probe", Token: rp.Tokens["probe"], Action: "received", Protocol: protocol, At: n, PayloadSHA256: Hash([]byte(Canary(rp, "probe")))}
+	return &Reference{Plan: rp, Snapshots: map[string]Snapshot{
+		"receiver": {Instance: "instance", At: n, Events: []Event{receipt}},
+		"boundary": {Instance: "instance", At: n, Events: []Event{}},
+	}}
+}
+
+func TestNonReceiptEvidence(t *testing.T) {
+	tests := []struct {
+		name, kind, outcome string
+		policy              func(*Policy)
+		mutate              func(Plan, *Reference, []Witness, time.Time) *Reference
+		want, grade         string
+	}{
+		{"reference proves live target", "tcp", "error", optIn, nil, "PASS", "non-receipt"},
+		{"udp send can rest on non-receipt", "udp", "sent", optIn, nil, "PASS", "non-receipt"},
+		{"policy did not opt in", "tcp", "error", nil, nil, "INCONCLUSIVE", ""},
+		{"missing reference", "tcp", "error", optIn, func(Plan, *Reference, []Witness, time.Time) *Reference { return nil }, "INCONCLUSIVE", ""},
+		{"reference to another target", "tcp", "error", optIn, func(_ Plan, r *Reference, _ []Witness, _ time.Time) *Reference {
+			r.Plan.Policy.Probes[0].Target = "127.0.0.1:1"
+			r.Plan.PolicySHA256 = PolicyHash(r.Plan.Policy)
+			return r
+		}, "INCONCLUSIVE", ""},
+		{"reference seen by another witness instance", "tcp", "error", optIn, func(_ Plan, r *Reference, _ []Witness, _ time.Time) *Reference {
+			s := r.Snapshots["receiver"]
+			s.Instance = "restarted"
+			r.Snapshots["receiver"] = s
+			return r
+		}, "INCONCLUSIVE", ""},
+		{"overflowed reference snapshot", "tcp", "error", optIn, func(_ Plan, r *Reference, _ []Witness, _ time.Time) *Reference {
+			s := r.Snapshots["receiver"]
+			s.Overflow = true
+			r.Snapshots["receiver"] = s
+			return r
+		}, "INCONCLUSIVE", ""},
+		{"reference before the measured run", "tcp", "error", optIn, func(p Plan, r *Reference, _ []Witness, _ time.Time) *Reference {
+			r.Plan.CreatedAt = p.CreatedAt.Add(-time.Second)
+			return r
+		}, "INCONCLUSIVE", ""},
+		{"reference on wrong protocol", "tcp", "error", optIn, func(_ Plan, r *Reference, _ []Witness, _ time.Time) *Reference {
+			r.Snapshots["receiver"].Events[0].Protocol = "udp"
+			return r
+		}, "INCONCLUSIVE", ""},
+		{"probe never ran", "tcp", "unsupported", optIn, nil, "INCONCLUSIVE", ""},
+		{"leak still fails", "tcp", "error", optIn, func(p Plan, r *Reference, w []Witness, n time.Time) *Reference {
+			w[0].Snapshot.Events = append(w[0].Snapshot.Events, receipt(p, "received", "tcp", n))
+			return r
+		}, "FAIL", ""},
+		{"explicit denial needs no grade", "tcp", "denied", optIn, nil, "PASS", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p, r, w, n := evidenceWith(t, tt.kind, "deny", tt.outcome, tt.policy)
+			ref := reference(t, p, tt.kind, n)
+			if tt.mutate != nil {
+				ref = tt.mutate(p, ref, w, n)
+			}
+			got := Evaluate(p, r, w, ref, n)
+			if got.Verdict != tt.want || got.Findings[0].Grade != tt.grade {
+				t.Fatalf("want %s/%q, got %s/%q: %+v", tt.want, tt.grade, got.Verdict, got.Findings[0].Grade, got.Findings[0])
+			}
+		})
+	}
+}
+
+func TestProxyKindsCannotRestOnNonReceipt(t *testing.T) {
+	p, r, w, n := evidenceWith(t, "http-proxy", "deny", "error", optIn)
+	if _, ok, _ := NewReferencePlan(p, n); ok {
+		t.Fatal("reference plan included a proxy probe")
+	}
+	// Even a hand-built reference for the proxy probe must not be accepted.
+	q := p.Policy
+	q.Name, q.MinDenyEvidence = "forged-reference", ""
+	q.Probes = []Probe{p.Policy.Probes[0]}
+	q.Probes[0].Expect = "allow"
+	rp, err := NewPlan(q, p.CreatedAt.Add(time.Millisecond))
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := Event{RunID: rp.RunID, ProbeID: "probe", Token: rp.Tokens["probe"], Action: "received", Protocol: "http", At: n, PayloadSHA256: Hash([]byte(Canary(rp, "probe")))}
+	ref := &Reference{Plan: rp, Snapshots: map[string]Snapshot{"receiver": {Instance: "instance", At: n, Events: []Event{e}}}}
+	if got := Evaluate(p, r, w, ref, n); got.Verdict != "INCONCLUSIVE" {
+		t.Fatalf("proxy probe passed on non-receipt: %+v", got.Findings)
+	}
+}
+
+func TestSignedNonReceiptGradeIsBound(t *testing.T) {
+	p, r, w, n := evidenceWith(t, "tcp", "deny", "error", optIn)
+	report := Evaluate(p, r, w, reference(t, p, "tcp", n), n)
+	if report.Verdict != "PASS" || report.Findings[0].Grade != "non-receipt" {
+		t.Fatalf("setup: %+v", report.Findings)
+	}
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	opts := VerifyOptions{RunID: p.RunID, PolicySHA256: p.PolicySHA256, Now: n, MaxAge: time.Minute}
+	bundle, _ := Sign(report, priv)
+	if _, err := Verify(bundle, pub, opts); err != nil {
+		t.Fatal(err)
+	}
+	for name, tamper := range map[string]func(*Report){
+		"grade removed":     func(r *Report) { r.Findings[0].Grade = "" },
+		"reference dropped": func(r *Report) { r.Reference = nil },
+	} {
+		forged := report
+		forged.Findings = append([]Finding(nil), report.Findings...)
+		tamper(&forged)
+		b, _ := Sign(forged, priv)
+		if _, err := Verify(b, pub, opts); err == nil {
+			t.Fatalf("%s: inconsistent signed grade accepted", name)
+		}
 	}
 }

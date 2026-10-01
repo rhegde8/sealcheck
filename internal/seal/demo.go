@@ -76,7 +76,7 @@ func Demo(ctx context.Context, out string) ([]Report, error) {
 	}{{"baseline", false, "PASS"}, {"leaky", true, "FAIL"}, {"remediated", false, "PASS"}} {
 		f.SetLeaky(phase.leaky)
 		// This in-process launcher is for a fixture demonstration only.
-		report, err := Check(ctx, p, key, filepath.Join(out, phase.name), RunProbes)
+		report, err := Check(ctx, p, key, filepath.Join(out, phase.name), RunProbes, nil)
 		if err != nil {
 			return reports, err
 		}

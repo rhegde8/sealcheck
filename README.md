@@ -57,7 +57,9 @@ Historical verification checks the signature and internal consistency. To author
 | FAIL | 1 | A forbidden operation succeeded or an independent witness observed its canary. |
 | INCONCLUSIVE | 2 | Required evidence is missing, a control failed, or execution was incomplete. Configuration errors also exit 2. |
 
-A UDP send, a timeout, or an HTTP 403 does not establish denial. Kernel `EACCES`/`EPERM` and configured boundary witnesses can corroborate denials. A correlated external receipt takes precedence over an error or denial reported by the runner. Missing witnesses, restarted witnesses, and event-buffer overflow prevent PASS. Optional missing coverage is reported as SKIP; optional probes that demonstrate a leak still fail the run.
+A UDP send, a timeout, or an HTTP 403 does not establish denial by default. Kernel `EACCES`/`EPERM` and configured boundary witnesses can corroborate denials. A correlated external receipt takes precedence over an error or denial reported by the runner. Missing witnesses, restarted witnesses, and event-buffer overflow prevent PASS. Optional missing coverage is reported as SKIP; optional probes that demonstrate a leak still fail the run.
+
+Sandboxes that fail ambiguously (unreachable networks, silent drops) can opt into `min_deny_evidence: non-receipt`. Direct deny probes can then pass with grade `non-receipt` when an unrestricted reference context, supplied with `--reference-launcher`, delivers the same probes during the check. This proves each target was live. Proxy probes still need explicit denials. See [evidence grades](docs/interfaces.md#evidence-grades).
 
 The `probe` command only emits observations; its exit code is not an evaluation verdict. Use `check`, `evaluate`, or current-context `verify` as the gate.
 
@@ -69,7 +71,7 @@ Requirements: Docker with Compose and Buildx, IPv6-capable Linux container netwo
 make lab
 ```
 
-The script builds the container image, creates an external signing key, runs baseline → proxy leak → remediation → direct IPv4/IPv6 leaks → restoration, and removes the containers. Reports remain under `out/lab-TIMESTAMP/`.
+The script builds the container image, creates an external signing key, runs baseline → proxy leak → remediation → direct IPv4/IPv6 leaks → restoration → non-receipt grading under `unreachable` routes, and removes the containers. Reports remain under `out/lab-TIMESTAMP/`.
 
 The sandbox's trusted initializer configures Linux `prohibit` routes and blocks management port 8081. The workload and runner then run as UID 10001 with capabilities dropped and `no_new_privs`. A `prohibit` route supplies explicit kernel denial evidence; silent packet dropping would produce INCONCLUSIVE without additional telemetry. The signing key and witness tokens stay on the controller side.
 
@@ -109,7 +111,7 @@ colima stop sealcheck
 
 Start it again when needed with `colima start sealcheck --activate=false`. This setup uses Colima on demand and selects the project context explicitly. See [Colima profiles](https://colima.run/docs/profiles/).
 
-The full lab was validated locally on 2026-10-01 with **PASS → FAIL → PASS → FAIL → PASS**, including direct IPv4/IPv6 leaks and all five historical signature checks. Tested versions and evidence details are recorded in [the coverage document](docs/coverage.md#local-linux-lab-validation).
+The full lab was validated locally on 2026-10-01 with **PASS → FAIL → PASS → FAIL → PASS → INCONCLUSIVE → PASS (non-receipt) → FAIL → PASS**, including direct IPv4/IPv6 leaks, proxy-side DNS resolution, and all nine historical signature checks. Tested versions and evidence details are recorded in [the coverage document](docs/coverage.md#local-linux-lab-validation).
 
 ## Use with a sandbox
 

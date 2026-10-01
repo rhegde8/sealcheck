@@ -22,7 +22,9 @@ The controller checks witness health before launching and collects evidence afte
 
 TCP establishment and successful forbidden HTTP operations establish reachability under the trusted-runner assumption. UDP socket creation/send does not establish remote receipt. DNS NXDOMAIN and application error responses do not imply that no query or payload left the boundary. Registry readback is performed by the controller and compares the exact synthetic bytes.
 
-Denials require an explicit kernel `EACCES`/`EPERM` or a trusted boundary event. `ECONNREFUSED`, `ENETUNREACH`, NXDOMAIN, HTTP error status, and timeouts alone remain ambiguous. Positive allowed-traffic controls help identify broken environments.
+Denials require an explicit kernel `EACCES`/`EPERM` or a trusted boundary event. `ECONNREFUSED`, `ENETUNREACH`, negative DNS answers, HTTP error status, and timeouts alone remain ambiguous. Positive allowed-traffic controls help identify broken environments.
+
+A policy can opt into `non-receipt` evidence for direct probes. Non-receipt alone is weak: a probe aimed at a mistyped address, or at a receiver that is not listening, also produces no receipt. The controller therefore runs the same probe definitions from an unrestricted reference context in the same check, and accepts non-receipt only where the same witness instance recorded the reference delivery. That establishes that the target was live and correctly addressed. It does not establish why the measured context's delivery failed, and it says nothing about other destinations. The reference context is trusted to be unrestricted toward the receivers; a reference that shares the sandbox's restrictions simply fails, leaving the findings INCONCLUSIVE. Proxy kinds are excluded, because a proxy that rejects a malformed handler request is indistinguishable from one enforcing policy. Single-datagram loss is mitigated by sending three copies of UDP and direct DNS canaries.
 
 ## Cryptographic boundaries
 

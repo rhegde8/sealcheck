@@ -51,7 +51,7 @@ func (e proxyEnv) check(t *testing.T, probes ...Probe) (Report, []byte) {
 		Witnesses: []WitnessConfig{{ID: "receiver", URL: e.receiver.Management, TokenEnv: e.tokenEnv, Role: "receiver"}, {ID: "proxy", URL: e.proxy.Management, TokenEnv: e.tokenEnv, Role: "boundary"}}}
 	_, key, _ := ed25519.GenerateKey(rand.Reader)
 	dir := t.TempDir()
-	r, err := Check(context.Background(), p, key, dir, RunProbes)
+	r, err := Check(context.Background(), p, key, dir, RunProbes, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

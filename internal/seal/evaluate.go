@@ -2,13 +2,14 @@ package seal
 
 import (
 	"fmt"
+	"reflect"
 	"time"
 )
 
 const ToolVersion = "0.2.0"
 
-func Evaluate(plan Plan, results Results, witnesses []Witness, now time.Time) Report {
-	report := Report{Version: Version, ToolVersion: ToolVersion, IssuedAt: now.UTC(), Plan: plan, Results: results, Witnesses: witnesses, Findings: []Finding{}, Verdict: "PASS", Limitations: []string{
+func Evaluate(plan Plan, results Results, witnesses []Witness, reference *Reference, now time.Time) Report {
+	report := Report{Version: Version, ToolVersion: ToolVersion, IssuedAt: now.UTC(), Plan: plan, Results: results, Witnesses: witnesses, Reference: reference, Findings: []Finding{}, Verdict: "PASS", Limitations: []string{
 		"Evidence applies only to this probe set, identity, destinations, and observation window.",
 		"The launcher, host, controller, and configured witnesses are trusted; runner identity is self-reported.",
 		"A signature authenticates the report, not the integrity of a compromised runtime. Periodic checks sample behavior.",
@@ -123,6 +124,14 @@ func Evaluate(plan Plan, results Results, witnesses []Witness, now time.Time) Re
 		} else if q.Expect == "deny" && denied {
 			f.Verdict = "PASS"
 			f.Reason = "explicit denial corroborates the expected policy"
+		} else if q.Expect == "deny" && plan.Policy.MinDenyEvidence == "non-receipt" && (r.Outcome == "error" || r.Outcome == "sent") {
+			if ref, ok := referenceReceipt(plan, q, witnessMap, reference, now); ok {
+				f.Verdict, f.Grade = "PASS", "non-receipt"
+				f.Reason = "reference delivery proved the target live; no canary arrived from the measured context"
+				f.Evidence = append(f.Evidence, ref)
+			} else {
+				f.Reason = "no corroborated denial and no reference delivery to support non-receipt"
+			}
 		} else if q.Expect == "allow" && (received || succeeded) {
 			f.Verdict = "PASS"
 			f.Reason = "allowed control operation succeeded"
@@ -143,10 +152,51 @@ func Evaluate(plan Plan, results Results, witnesses []Witness, now time.Time) Re
 			report.Verdict = "INCONCLUSIVE"
 		}
 	}
+	for _, f := range report.Findings {
+		if f.Grade == "non-receipt" {
+			report.Limitations = append(report.Limitations, "Non-receipt findings show the target was live from a reference context and no canary arrived from the measured context; they do not identify why delivery failed.")
+			break
+		}
+	}
 	if len(report.Errors) > 0 && report.Verdict != "FAIL" {
 		report.Verdict = "INCONCLUSIVE"
 	}
 	return report
+}
+
+// referenceReceipt finds a reference delivery for q's exact target, observed
+// by the same witness instance that watched the measured run.
+func referenceReceipt(plan Plan, q Probe, witnesses map[string]Witness, ref *Reference, now time.Time) (string, bool) {
+	if ref == nil || !nonReceiptKind(q.Kind) || ref.Plan.Validate() != nil || ref.Plan.RunID == plan.RunID ||
+		ref.Plan.CreatedAt.Before(plan.CreatedAt) || ref.Plan.CreatedAt.After(now.Add(2*time.Second)) {
+		return "", false
+	}
+	same := false
+	for _, rq := range ref.Plan.Policy.Probes {
+		if rq.ID == q.ID {
+			a, b := rq, q
+			a.Expect, a.Optional, b.Expect, b.Optional = "", false, "", false
+			same = reflect.DeepEqual(a, b)
+		}
+	}
+	if !same {
+		return "", false
+	}
+	payload := Hash([]byte(Canary(ref.Plan, q.ID)))
+	for _, cfg := range plan.Policy.Witnesses {
+		s, ok := ref.Snapshots[cfg.ID]
+		if !ok || s.Overflow || s.Instance == "" || s.Instance != witnesses[cfg.ID].Snapshot.Instance {
+			continue
+		}
+		for i, e := range s.Events {
+			if e.Action == "received" && e.RunID == ref.Plan.RunID && e.ProbeID == q.ID && e.Token == ref.Plan.Tokens[q.ID] &&
+				e.PayloadSHA256 == payload && eventProtocolMatches(q, e.Protocol) &&
+				!e.At.Before(ref.Plan.CreatedAt.Add(-2*time.Second)) && !e.At.After(now.Add(2*time.Second)) {
+				return fmt.Sprintf("reference/witnesses/%s/events/%d", cfg.ID, i), true
+			}
+		}
+	}
+	return "", false
 }
 
 // A hostname-borne canary leaks through resolution, so DNS receipts count.

@@ -92,7 +92,11 @@ func registerRun(ctx context.Context, cfg WitnessConfig, run string, expires tim
 
 // Check is the trusted control path. launch must enter the workload's actual
 // security context; the local demo's launcher intentionally offers no isolation.
-func Check(ctx context.Context, p Policy, key ed25519.PrivateKey, out string, launch LaunchFunc) (Report, error) {
+//
+// reference, when non-nil, launches the policy's direct deny probes from an
+// unrestricted context as a positive control for non-receipt evidence. It
+// runs after the measured launcher, within the measured plan's deadline.
+func Check(ctx context.Context, p Policy, key ed25519.PrivateKey, out string, launch, reference LaunchFunc) (Report, error) {
 	if err := p.Validate(); err != nil {
 		return Report{}, err
 	}
@@ -130,6 +134,10 @@ func Check(ctx context.Context, p Policy, key ed25519.PrivateKey, out string, la
 	runCtx, cancel := context.WithDeadline(ctx, plan.Deadline)
 	defer cancel()
 	results, launchErr := launch(runCtx, plan)
+	var ref *Reference
+	if reference != nil && runCtx.Err() == nil {
+		ref = runReference(runCtx, p, witnesses, plan, reference)
+	}
 	// Complete evidence collection after probe failures. Observed leaks take precedence.
 	timer := time.NewTimer(time.Duration(p.ObservationMS) * time.Millisecond)
 	select {
@@ -161,7 +169,14 @@ func Check(ctx context.Context, p Policy, key ed25519.PrivateKey, out string, la
 		}
 		w.Snapshot = s
 	}
-	report := Evaluate(plan, results, witnesses, time.Now())
+	if ref != nil {
+		for _, cfg := range p.Witnesses {
+			if s, err := fetchSnapshot(evidenceCtx, cfg, "/events", ref.Plan.RunID); err == nil {
+				ref.Snapshots[cfg.ID] = s
+			}
+		}
+	}
+	report := Evaluate(plan, results, witnesses, ref, time.Now())
 	if launchErr != nil {
 		report.Errors = append(report.Errors, "launcher failed or returned invalid output")
 		if report.Verdict != "FAIL" {
@@ -182,6 +197,28 @@ func Check(ctx context.Context, p Policy, key ed25519.PrivateKey, out string, la
 		return report, err
 	}
 	return report, nil
+}
+
+func runReference(ctx context.Context, p Policy, witnesses []Witness, main Plan, launch LaunchFunc) *Reference {
+	plan, ok, err := NewReferencePlan(main, time.Now())
+	if err != nil || !ok {
+		return nil
+	}
+	ref := &Reference{Plan: plan, Snapshots: map[string]Snapshot{}}
+	for i, cfg := range p.Witnesses {
+		if witnesses[i].HealthyBefore && registerRun(ctx, cfg, plan.RunID, plan.Deadline.Add(runRetention)) != nil {
+			ref.Error = "reference run registration failed"
+		}
+	}
+	refCtx, cancel := context.WithDeadline(ctx, plan.Deadline)
+	defer cancel()
+	results, err := launch(refCtx, plan)
+	if err != nil {
+		ref.Error = "reference launcher failed or returned invalid output"
+		return ref
+	}
+	ref.Results = results
+	return ref
 }
 
 // Readback runs outside the sandbox and checks the exact synthetic bytes.
@@ -238,7 +275,11 @@ func Summary(r Report) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s — %s\nRun: %s\nPolicy SHA-256: %s\nObserved: %s to %s\nIdentity: uid=%d euid=%d (%s)\n", r.Verdict, r.Plan.Policy.Name, r.Plan.RunID, r.Plan.PolicySHA256, r.Plan.CreatedAt.Format(time.RFC3339), r.IssuedAt.Format(time.RFC3339), r.Results.Identity.UID, r.Results.Identity.EUID, r.Results.Identity.Source)
 	for _, f := range r.Findings {
-		fmt.Fprintf(&b, "  %-12s %-24s %s\n", f.Verdict, f.ID, f.Reason)
+		verdict := f.Verdict
+		if f.Grade != "" {
+			verdict += " (" + f.Grade + ")"
+		}
+		fmt.Fprintf(&b, "  %-12s %-24s %s\n", verdict, f.ID, f.Reason)
 	}
 	for _, e := range r.Errors {
 		fmt.Fprintf(&b, "  ERROR: %s\n", e)
