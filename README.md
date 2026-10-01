@@ -63,7 +63,7 @@ The `probe` command only emits observations; its exit code is not an evaluation 
 
 ## Linux isolation lab
 
-Requirements: Docker with Compose, IPv6-capable Linux container networking, Go, `curl`, and `openssl`. Docker Desktop uses its Linux VM. The lab reserves `172.30.56.0/24`, `172.30.57.0/24`, `fd53:ea1:56::/64`, and loopback ports 18080–18082.
+Requirements: Docker with Compose and Buildx, IPv6-capable Linux container networking, Go, `curl`, and `openssl`. Docker Desktop and Colima provide a Linux VM on macOS. The lab reserves `172.30.56.0/24`, `172.30.57.0/24`, `fd53:ea1:56::/64`, and loopback ports 18080–18082.
 
 ```sh
 make lab
@@ -73,7 +73,43 @@ The script builds the container image, creates an external signing key, runs bas
 
 The sandbox's trusted initializer configures Linux `prohibit` routes and blocks management port 8081. The workload and runner then run as UID 10001 with capabilities dropped and `no_new_privs`. A `prohibit` route supplies explicit kernel denial evidence; silent packet dropping would produce INCONCLUSIVE without additional telemetry. The signing key and witness tokens stay on the controller side.
 
+The sandbox joins only the internal data network. The trusted receiver and proxy also join a separate management bridge so the controller can reach their loopback-published ports. The sandbox's controlled resolver configuration is mounted read-only, bypassing Docker's DNS stub.
+
 The Docker lab is a reference integration. Adapting it to another harness requires matching that harness's actual namespace, credentials, syscall filters, and process restrictions. `docker exec` by itself does not recreate a process's self-applied Landlock or seccomp restrictions.
+
+### macOS with Colima
+
+On an Apple Silicon Mac with Homebrew, install the VM runtime and Docker tools:
+
+```sh
+brew install colima docker docker-compose docker-buildx
+```
+
+Merge `cliPluginsExtraDirs` into `~/.docker/config.json`, preserving existing settings. For the standard Apple Silicon Homebrew prefix:
+
+```json
+{
+  "cliPluginsExtraDirs": ["/opt/homebrew/lib/docker/cli-plugins"]
+}
+```
+
+For another Homebrew prefix, use its `lib/docker/cli-plugins` directory. See the [Homebrew Compose instructions](https://formulae.brew.sh/formula/docker-compose).
+
+Start a dedicated native ARM64 VM and run the lab with its Docker context:
+
+```sh
+colima start sealcheck --runtime docker --vm-type vz \
+  --arch aarch64 --cpus 2 --memory 4 --disk 30 --activate=false
+docker --context colima-sealcheck info
+docker compose version
+docker buildx version
+DOCKER_CONTEXT=colima-sealcheck make lab
+colima stop sealcheck
+```
+
+Start it again when needed with `colima start sealcheck --activate=false`. This setup uses Colima on demand and selects the project context explicitly. See [Colima profiles](https://colima.run/docs/profiles/).
+
+The full lab was validated locally on 2026-10-01 with **PASS → FAIL → PASS → FAIL → PASS**, including direct IPv4/IPv6 leaks and all five historical signature checks. Tested versions and evidence details are recorded in [the coverage document](docs/coverage.md#local-linux-lab-validation).
 
 ## Use with a sandbox
 

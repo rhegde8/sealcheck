@@ -48,6 +48,13 @@ services:
       data:
         ipv4_address: 172.30.56.10
         ipv6_address: fd53:ea1:56::10
+    volumes:
+      - type: bind
+        source: ./resolv.conf
+        target: /etc/resolv.conf
+        read_only: true
+        bind:
+          create_host_path: false
     depends_on: [proxy]
     read_only: true
 
@@ -60,7 +67,8 @@ networks:
         - subnet: 172.30.56.0/24
         - subnet: fd53:ea1:56::/64
   management:
-    internal: true
+    # Host port publishing needs a non-internal network. Only trusted witnesses
+    # join it; the sandbox stays on the internal data network.
     ipam:
       config:
         - subnet: 172.30.57.0/24

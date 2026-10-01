@@ -22,10 +22,38 @@
 
 1. **Unit and loopback integration:** `go test -race ./...`. These exercise sockets, observers, proxy fixtures, verdict rules, and signed evidence.
 2. **Portable fixture demonstration:** `sealcheck demo`. Transport controls are intentionally reachable. This is not an OS isolation test.
-3. **Linux container lab:** `make lab`. Real route prohibitions, unprivileged execution, and controlled network leaks. Requires Docker/Compose and IPv6 networking.
+3. **Linux container lab:** `make lab`. Real route prohibitions, unprivileged execution, and controlled network leaks. Requires Docker/Compose/Buildx and IPv6 networking.
 4. **Vendor reproduction:** not implemented or claimed. A successful synthetic fixture test is not evidence about an Artifactory release.
 
-Docker was unavailable in the initial development environment. The Linux lab's scripts and configuration were checked locally; execution is delegated to the included Linux CI gate or a user's Docker environment. Do not label that level validated until it has actually run successfully.
+Docker was unavailable in the initial development environment. The complete Linux lab has since run successfully in the local Colima environment described below. GitHub's Linux CI remains an independent gate; local validation does not establish that a workflow has passed on its runner.
+
+## Local Linux lab validation
+
+Validated on 2026-10-01 with `DOCKER_CONTEXT=colima-sealcheck make lab`. The host was macOS 27.0 on Apple Silicon. The Colima VM used native ARM64, Apple's VZ backend, 2 CPUs, 4 GiB RAM, and a 30 GiB data disk, running Ubuntu 24.04.4 LTS with Linux kernel `6.8.0-117-generic`.
+
+| Tool | Tested version |
+|---|---|
+| Colima | 0.10.3 |
+| Lima | 2.2.0 |
+| Docker CLI | 29.8.2 |
+| Docker Engine in VM | 29.5.2 |
+| Docker Compose | 5.5.1 |
+| Docker Buildx | 0.37.2 |
+| Host Go | 1.27.1 |
+
+| Phase | Observed verdict |
+|---|---|
+| Baseline | PASS |
+| Proxy leak | FAIL |
+| Remediated proxy | PASS |
+| Direct IPv4/IPv6 leaks | FAIL |
+| Restored routes | PASS |
+
+The direct-leak report independently recorded forbidden canary delivery for TCP and UDP over both IPv4 and IPv6, direct and system-configured DNS, and direct HTTP. Every phase reported UID/EUID/GID 10001, effective capabilities `0000000000000000`, `NoNewPrivs: 1`, and seccomp mode 2; these remain runner-reported identity observations.
+
+All five bundles passed `sealcheck verify --historical` with the controller's separately generated public key. Historical verification establishes signature validity and evidence consistency; it does not authorize a current evaluation. Containers and lab networks were removed, and Colima is run on demand. Reports and keys are retained locally under `out/lab-20261001T044855Z/`, which is ignored by Git.
+
+The first executions exposed three lab startup issues, now fixed: protocol-name lookup in the minimal Debian image, writes to the read-only resolver file, and host port publishing on internal-only witness networks. The initializer uses TCP protocol number 6, Compose mounts the controlled resolver configuration read-only, and trusted witnesses join a separate management bridge. The sandbox retains its internal data network and IPv4/IPv6 prohibit routes.
 
 ## Explicit omissions
 

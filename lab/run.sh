@@ -4,7 +4,8 @@ cd "$(dirname "$0")/.."
 
 command -v docker >/dev/null || { echo 'Docker with Compose is required for the Linux isolation lab.' >&2; exit 2; }
 test -x bin/sealcheck || { echo 'Run make build first.' >&2; exit 2; }
-export SEALCHECK_WITNESS_TOKEN="$(openssl rand -hex 24)"
+SEALCHECK_WITNESS_TOKEN="$(openssl rand -hex 24)"
+export SEALCHECK_WITNESS_TOKEN
 out="out/lab-$(date -u +%Y%m%dT%H%M%SZ)"
 mkdir -p "$out"
 bin/sealcheck keygen --private-key "$out/controller.key.pem" --public-key "$out/controller.pub.pem"
