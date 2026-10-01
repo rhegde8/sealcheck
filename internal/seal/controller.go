@@ -99,11 +99,20 @@ func Check(ctx context.Context, p Policy, key ed25519.PrivateKey, out string, la
 		timer.Stop()
 	case <-timer.C:
 	}
+	// A cancelled launcher must not erase a canary already recorded outside the
+	// sandbox. Allow bounded final collection after cancellation or expiry;
+	// missing evidence and interruption still prevent PASS.
+	evidenceCtx := runCtx
+	if runCtx.Err() != nil {
+		var stopEvidence context.CancelFunc
+		evidenceCtx, stopEvidence = context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
+		defer stopEvidence()
+	}
 	for i, cfg := range p.Witnesses {
 		if cfg.RegistryURL != "" {
-			witnesses[i].Readbacks = readRegistry(runCtx, cfg.RegistryURL, plan)
+			witnesses[i].Readbacks = readRegistry(evidenceCtx, cfg.RegistryURL, plan)
 		}
-		s, err := fetchSnapshot(runCtx, cfg, "/events", plan.RunID)
+		s, err := fetchSnapshot(evidenceCtx, cfg, "/events", plan.RunID)
 		w := &witnesses[i]
 		w.After = time.Now().UTC()
 		w.HealthyAfter = err == nil && s.Instance == w.Snapshot.Instance
