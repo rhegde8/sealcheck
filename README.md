@@ -21,7 +21,7 @@ Reports answer **what was observed for this policy, probe set, identity, and tim
 
 ## Try the portable demo
 
-Requirements: Go 1.24 or later. The core uses only the Go standard library. The demo opens loopback listeners; it needs no Docker or Internet access.
+Requirements: Go 1.27.3 or later. The core uses only the Go standard library. The demo opens loopback listeners; it needs no Docker or Internet access.
 
 ```sh
 make test
@@ -160,3 +160,5 @@ make vet
 ```
 
 CI runs tests, the portable demo, and the Linux lab. It uploads report evidence and public keys, excluding private signing keys. A successful workflow run is required before claiming the Linux lab has been validated on that runner.
+
+The security workflow runs `govulncheck ./...` on pushes, pull requests, and weekly. Dependabot checks Go modules, Docker base images, and GitHub Actions weekly. Keep the Go minimum in `go.mod` and the Docker builder version aligned with a supported security patch release; update the pinned scanner version in the security workflow when upgrading audit tooling. See [the security audit](docs/security-audit.md) for findings and deployment limitations.
